@@ -78,7 +78,50 @@ function LoginPage() {
 /* ================================================================== */
 /* ROOT APP                                                           */
 /* ================================================================== */
+function SetupRequired() {
+  const vars = [
+    ["VITE_SUPABASE_URL",      "https://timhgmqztcqajrcfogzh.supabase.co"],
+    ["VITE_SUPABASE_ANON_KEY", "your Supabase anon / publishable key"],
+    ["VITE_GROQ_KEY",          "optional — free AI key from console.groq.com"],
+  ];
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+      <div className={`${card} w-full max-w-lg p-7`}>
+        <div className="mb-4 flex items-center gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-amber-100 text-amber-600"><AlertTriangle size={21}/></div>
+          <div>
+            <h1 className="text-lg font-extrabold text-slate-900">Configuration needed</h1>
+            <p className="text-xs text-slate-500">This deployment has no database credentials.</p>
+          </div>
+        </div>
+        <p className="text-sm leading-relaxed text-slate-600">
+          The keys are deliberately not stored in GitHub, so they have to be set on the host.
+          Vite reads them at <em>build</em> time, which means a redeploy is required after adding them.
+        </p>
+        <ol className="mt-4 space-y-2.5 text-sm text-slate-700">
+          <li className="flex gap-2.5"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-600 text-[11px] font-bold text-white">1</span><span>Netlify → your site → <strong>Site configuration</strong> → <strong>Environment variables</strong></span></li>
+          <li className="flex gap-2.5"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-600 text-[11px] font-bold text-white">2</span><span>Add each variable below with <strong>Add a variable</strong></span></li>
+          <li className="flex gap-2.5"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-600 text-[11px] font-bold text-white">3</span><span><strong>Deploys</strong> → <strong>Trigger deploy</strong> → <strong>Clear cache and deploy site</strong></span></li>
+        </ol>
+        <div className="mt-4 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          {vars.map(([k, v]) => (
+            <div key={k} className="text-xs">
+              <code className="font-mono font-bold text-violet-700">{k}</code>
+              <div className="mt-0.5 font-mono text-[11px] text-slate-500">{v}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-[11px] leading-relaxed text-slate-400">
+          A plain redeploy can serve a cached build, which is why the cleared-cache option is listed.
+          Your Supabase keys are in Supabase → Project Settings → API.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function AppRoot() {
+  if (configMissing) return <SetupRequired/>;
   return <AuthProvider><AppInner /></AuthProvider>;
 }
 
