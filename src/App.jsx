@@ -790,49 +790,87 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
 
 function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
   const { user, profile, isAdmin } = useAuth();
-  const units  = useMemo(() => Array.from(new Set(questions.map(x=>x.unit))), [questions]);
-  // Include rooms where user is owner OR listed as co-owner.
-  // Co-owners are loaded from the classrooms join; for the quiz dropdown
-  // we match on owner_id (which we know) or rely on the RLS-scoped
-  // classrooms list (which already includes co-owned rooms).
   const myRooms = useMemo(() => classrooms.filter(c => !c.is_archived), [classrooms]);
   const [title, setTitle]       = useState("");
   const [week, setWeek]         = useState(quizzes.length+1);
-  const [minutes, setMinutes]   = useState(5);
-  const [drawCount, setDraw]    = useState(5);
+  const [minutes, setMinutes]   = useState(20);
   const [maxAttempts, setMaxAttempts] = useState(1);
   const [openAt, setOpenAt]     = useState("");
   const [closeAt, setCloseAt]   = useState("");
   const [classroomId, setClassroomId] = useState(myRooms[0]?.id ?? "");
-  // Issue #2 fix: nothing pre-selected — teacher opts IN question by question
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [pSort, setPSort] = useState("newest");
   const [pQuery, setPQuery] = useState("");
+  const [pSubject, setPSubject] = useState("all");
+  const [pUnit, setPUnit] = useState("all");
+  const [pTopic, setPTopic] = useState("all");
+  const [pDiff, setPDiff] = useState("all");
   const [pickerOpen, setPickerOpen] = useState(true);
-  const [saving, setSaving]     = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const sortedQs = useMemo(() => {
-    const filtered = questions.filter(q => {
-      if (!pQuery.trim()) return true;
+  // Cascade filter options
+  const subjects = useMemo(() => Array.from(new Set(questions.map(q => q.subject||"").filter(Boolean))).sort(), [questions]);
+  const units    = useMemo(() => {
+    const src = pSubject === "all" ? questions : questions.filter(q => (q.subject||"") === pSubject);
+    return Array.from(new Set(src.map(q => q.unit||""))).filter(Boolean).sort();
+  }, [questions, pSubject]);
+  const topics   = useMemo(() => {
+    const src = questions.filter(q =>
+      (pSubject === "all" || (q.subject||"") === pSubject) &&
+      (pUnit === "all"    || (q.unit||"")    === pUnit)
+    );
+    return Array.from(new Set(src.map(q => q.topic||"General"))).sort();
+  }, [questions, pSubject, pUnit]);
+
+  const filteredQs = useMemo(() => {
+    let src = questions;
+    if (pSubject !== "all") src = src.filter(q => (q.subject||"") === pSubject);
+    if (pUnit    !== "all") src = src.filter(q => (q.unit||"")    === pUnit);
+    if (pTopic   !== "all") src = src.filter(q => (q.topic||"General") === pTopic);
+    if (pDiff    !== "all") src = src.filter(q => (q.difficulty||"medium") === pDiff);
+    if (pQuery.trim()) {
       const t = pQuery.toLowerCase();
-      return q.question.toLowerCase().includes(t) || (q.unit||"").toLowerCase().includes(t);
-    });
-    if (pSort === "newest") return [...filtered].sort((a,b) => (b.created_at||"").localeCompare(a.created_at||""));
-    if (pSort === "unit")   return [...filtered].sort((a,b) => (a.unit||"").localeCompare(b.unit||""));
-    return filtered;
-  }, [questions, pSort, pQuery]);
+      src = src.filter(q => q.question.toLowerCase().includes(t) || (q.unit||"").toLowerCase().includes(t));
+    }
+    if (pSort === "newest") return [...src].sort((a,b) => (b.created_at||"").localeCompare(a.created_at||""));
+    if (pSort === "unit")   return [...src].sort((a,b) => (a.unit||"").localeCompare(b.unit||""));
+    if (pSort === "diff")   return [...src].sort((a,b) => ["easy","medium","hard"].indexOf(a.difficulty||"medium") - ["easy","medium","hard"].indexOf(b.difficulty||"medium"));
+    return src;
+  }, [questions, pSubject, pUnit, pTopic, pDiff, pQuery, pSort]);
 
-  const selectedQs    = questions.filter(q => selectedIds.has(q.id));
-  const derivedUnits  = useMemo(() => Array.from(new Set(selectedQs.map(q => q.unit))), [selectedQs]);
+  // Group filtered by subject→unit for display
+  const groupedFiltered = useMemo(() => {
+    const g = {};
+    filteredQs.forEach(q => {
+      const s = q.subject || "(no subject)";
+      const u = q.unit || "General";
+      if (!g[s]) g[s] = {};
+      if (!g[s][u]) g[s][u] = [];
+      g[s][u].push(q);
+    });
+    return g;
+  }, [filteredQs]);
+
+  const selectedQs   = questions.filter(q => selectedIds.has(q.id));
+  const derivedUnits = useMemo(() => Array.from(new Set(selectedQs.map(q => q.unit))), [selectedQs]);
   const selectedCount = selectedIds.size;
 
   const toggleQ        = id  => setSelectedIds(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const selectAll      = ()  => setSelectedIds(new Set(questions.map(q => q.id)));
-  const selectFiltered = ()  => setSelectedIds(s => { const n = new Set(s); sortedQs.forEach(q => n.add(q.id)); return n; });
+  const selectFiltered = ()  => setSelectedIds(s => { const n = new Set(s); filteredQs.forEach(q => n.add(q.id)); return n; });
+  const deselectFiltered = () => setSelectedIds(s => { const n = new Set(s); filteredQs.forEach(q => n.delete(q.id)); return n; });
   const deselectAll    = ()  => setSelectedIds(new Set());
+  const selectByUnit   = (unit) => setSelectedIds(s => { const n = new Set(s); questions.filter(q=>q.unit===unit).forEach(q=>n.add(q.id)); return n; });
 
   const needsRoom = !isAdmin && !classroomId;
   const ready = title.trim() && selectedCount > 0 && !needsRoom;
+  const diffTone = d => d==="hard"?"rose":d==="easy"?"emerald":"amber";
+  const diffCounts = useMemo(() => {
+    const e=filteredQs.filter(q=>(q.difficulty||"medium")==="easy").length;
+    const m=filteredQs.filter(q=>(q.difficulty||"medium")==="medium").length;
+    const h=filteredQs.filter(q=>(q.difficulty||"medium")==="hard").length;
+    return { easy:e, medium:m, hard:h };
+  }, [filteredQs]);
 
   const save = async () => {
     setSaving(true);
@@ -850,7 +888,7 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
         created_by: user.id,
       });
       setQuizzes(prev => [...prev, qz]);
-      logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "quiz.create", target: title.trim(), meta: { classroom_id: classroomId || null } });
+      logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "quiz.create", target: title.trim(), meta: { classroom_id: classroomId || null, q_count: selectedCount } });
       onDone();
     } catch (err) { alert(err.message); }
     setSaving(false);
@@ -860,14 +898,13 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
     <div className={`${card} p-5`}>
       <h4 className="mb-4 text-sm font-bold text-slate-900">New quiz</h4>
       <div className="grid gap-4 sm:grid-cols-2">
-        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Title</label><input className={inp} placeholder="e.g. Week 3 Check-in" value={title} onChange={e=>setTitle(e.target.value)}/></div>
+        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Title</label><input className={inp} placeholder="e.g. Aptitude Baseline Quiz" value={title} onChange={e=>setTitle(e.target.value)}/></div>
         <div className="grid grid-cols-3 gap-2">
-          {[["Week",week,setWeek],["Minutes",minutes,setMinutes],["Questions",drawCount,setDraw]].map(([label,val,set]) => (
-            <div key={label}><label className="mb-1 block text-xs font-semibold text-slate-500">{label}</label><input type="number" min={1} className={inp} value={val} onChange={e=>set(e.target.value)}/></div>
-          ))}
+          <div><label className="mb-1 block text-xs font-semibold text-slate-500">Week</label><input type="number" min={1} className={inp} value={week} onChange={e=>setWeek(e.target.value)}/></div>
+          <div><label className="mb-1 block text-xs font-semibold text-slate-500">Minutes</label><input type="number" min={1} className={inp} value={minutes} onChange={e=>setMinutes(e.target.value)}/></div>
+          <div><label className="mb-1 block text-xs font-semibold text-slate-500">Max retakes</label><input type="number" min={1} max={5} className={inp} value={maxAttempts} onChange={e=>setMaxAttempts(e.target.value)}/></div>
         </div>
       </div>
-
       <div className="mt-4">
         <label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><School size={12}/> Share with classroom</label>
         <select className={inp} value={classroomId} onChange={e=>setClassroomId(e.target.value)}>
@@ -875,30 +912,14 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
           {isAdmin && <option value="">All students (no classroom)</option>}
           {!myRooms.length && !isAdmin && <option value="">— no classrooms yet —</option>}
         </select>
-        {needsRoom
-          ? <p className="mt-1 text-[11px] font-semibold text-rose-600">Create a classroom first (Classrooms tab), then students who join it will see this quiz.</p>
-          : <p className="mt-1 text-[11px] text-slate-400">{classroomId ? "Only students who joined this classroom can see and take the quiz." : "Visible to every signed-in student."}</p>}
+        {needsRoom && <p className="mt-1 text-[11px] font-semibold text-rose-600">Create a classroom first (Classrooms tab).</p>}
+      </div>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div><label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Opens at</label><input type="datetime-local" className={inp} value={openAt} onChange={e=>setOpenAt(e.target.value)}/><p className="mt-1 text-[11px] text-slate-400">Leave blank to open immediately.</p></div>
+        <div><label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Closes at</label><input type="datetime-local" className={inp} value={closeAt} onChange={e=>setCloseAt(e.target.value)}/><p className="mt-1 text-[11px] text-slate-400">Leave blank for no deadline.</p></div>
       </div>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-3">
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><RotateCcw size={12}/> Max attempts</label>
-          <input type="number" min={1} max={5} className={inp} value={maxAttempts} onChange={e=>setMaxAttempts(e.target.value)}/>
-          <p className="mt-1 text-[11px] text-slate-400">1 = no retakes. 2 = one retake allowed.</p>
-        </div>
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Opens at</label>
-          <input type="datetime-local" className={inp} value={openAt} onChange={e=>setOpenAt(e.target.value)}/>
-          <p className="mt-1 text-[11px] text-slate-400">Leave blank to open immediately.</p>
-        </div>
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Closes at</label>
-          <input type="datetime-local" className={inp} value={closeAt} onChange={e=>setCloseAt(e.target.value)}/>
-          <p className="mt-1 text-[11px] text-slate-400">Leave blank for no deadline.</p>
-        </div>
-      </div>
-
-      {/* Question picker */}
+      {/* Question picker — cascade filters */}
       <div className="mt-4 rounded-xl border-2 border-slate-200 bg-white overflow-hidden">
         <button onClick={() => setPickerOpen(v => !v)} className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition">
           <div className="flex items-center gap-2">
@@ -910,42 +931,107 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
         </button>
         {pickerOpen && (
           <div className="border-t border-slate-100 p-4 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <select className={`${inp} !w-auto text-xs`} value={pSort} onChange={e => setPSort(e.target.value)}>
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="unit">By unit</option>
+            {/* Cascade filters row 1 */}
+            <div className="flex flex-wrap gap-2">
+              <select className={`${inp} !w-auto text-xs`} value={pSubject} onChange={e=>{setPSubject(e.target.value);setPUnit("all");setPTopic("all");}}>
+                <option value="all">All subjects</option>
+                {subjects.map(s=><option key={s} value={s}>{s}</option>)}
               </select>
-              <input className={`${inp} !w-auto min-w-[160px] flex-1 text-xs`} placeholder="Search…" value={pQuery} onChange={e => setPQuery(e.target.value)}/>
+              <select className={`${inp} !w-auto text-xs`} value={pUnit} onChange={e=>{setPUnit(e.target.value);setPTopic("all");}} disabled={units.length===0}>
+                <option value="all">All units</option>
+                {units.map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+              <select className={`${inp} !w-auto text-xs`} value={pTopic} onChange={e=>setPTopic(e.target.value)} disabled={topics.length===0}>
+                <option value="all">All topics</option>
+                {topics.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+              <select className={`${inp} !w-auto text-xs`} value={pDiff} onChange={e=>setPDiff(e.target.value)}>
+                <option value="all">Any difficulty</option>
+                <option value="easy">Easy only</option>
+                <option value="medium">Medium only</option>
+                <option value="hard">Hard only</option>
+              </select>
+              <select className={`${inp} !w-auto text-xs`} value={pSort} onChange={e=>setPSort(e.target.value)}>
+                <option value="newest">Newest first</option>
+                <option value="unit">By unit</option>
+                <option value="diff">By difficulty</option>
+              </select>
+              <input className={`${inp} !w-auto min-w-[140px] flex-1 text-xs`} placeholder="Search questions…" value={pQuery} onChange={e=>setPQuery(e.target.value)}/>
             </div>
+            {/* Difficulty breakdown of current filter */}
+            {filteredQs.length > 0 && (
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <span><span className={`${num} font-bold text-slate-800`}>{filteredQs.length}</span> match</span>
+                <div className="flex gap-1.5">
+                  <button onClick={()=>setPDiff("easy")} className="rounded-full border px-2 py-0.5 text-[11px] font-semibold bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100">{diffCounts.easy} easy</button>
+                  <button onClick={()=>setPDiff("medium")} className="rounded-full border px-2 py-0.5 text-[11px] font-semibold bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100">{diffCounts.medium} medium</button>
+                  <button onClick={()=>setPDiff("hard")} className="rounded-full border px-2 py-0.5 text-[11px] font-semibold bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100">{diffCounts.hard} hard</button>
+                </div>
+              </div>
+            )}
+            {/* Bulk action buttons */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
-              <span className="text-xs text-slate-500">
-                <span className={`${num} font-semibold text-slate-800`}>{sortedQs.length}</span> in view · <span className={`${num} font-semibold text-slate-800`}>{questions.length}</span> total
-              </span>
+              <span className="text-xs text-slate-400"><span className={`${num} font-semibold text-slate-800`}>{selectedCount}</span> selected of <span className={`${num} font-semibold`}>{questions.length}</span> total</span>
               <div className="flex flex-wrap gap-1">
-                <button onClick={selectAll}      className={`${btnP} !py-1.5 !px-3 !text-xs`}><Plus size={12}/> All in bank ({questions.length})</button>
-                <button onClick={selectFiltered} className={`${btnG} !py-1.5 !px-3 !text-xs`}>Select filtered ({sortedQs.length})</button>
-                <button onClick={deselectAll}    className={`${btnG} !py-1.5 !px-3 !text-xs`}>Clear ({selectedCount})</button>
+                <button onClick={selectAll}        className={`${btnP} !py-1.5 !px-3 !text-xs`}><Plus size={12}/> All bank ({questions.length})</button>
+                <button onClick={selectFiltered}   className={`${btnG} !py-1.5 !px-3 !text-xs`}><Plus size={12}/> Add filtered ({filteredQs.length})</button>
+                <button onClick={deselectFiltered} className={`${btnG} !py-1.5 !px-3 !text-xs`}>Remove filtered</button>
+                <button onClick={deselectAll}      className={`${btnG} !py-1.5 !px-3 !text-xs`}><XCircle size={12}/> Clear all</button>
               </div>
             </div>
-            <div className="max-h-80 overflow-y-auto rounded-lg border border-slate-100 divide-y divide-slate-100">
-              {sortedQs.length === 0
-                ? <div className="p-6 text-center text-xs text-slate-400">No questions in bank yet. Upload via Question Bank tab first.</div>
-                : sortedQs.map(q => {
-                  const checked = selectedIds.has(q.id);
-                  return (
-                    <label key={q.id} className={`flex items-start gap-3 p-3 cursor-pointer transition ${checked ? "bg-violet-50/50" : "hover:bg-slate-50"}`}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleQ(q.id)} className="mt-1 shrink-0 h-4 w-4 accent-violet-600"/>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-1 mb-0.5">
-                          <Badge tone="sky">{q.unit}</Badge>
-                          {q.topic && q.topic !== "General" && <span className="text-[10px] text-slate-400">{q.topic}</span>}
+            {/* Unit quick-select chips */}
+            {pSubject !== "all" && units.length > 1 && (
+              <div className="flex flex-wrap gap-1.5">
+                <span className="text-[10px] font-semibold text-slate-400 self-center">Quick add by unit:</span>
+                {units.map(u => (
+                  <button key={u} onClick={()=>selectByUnit(u)} className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700 hover:bg-sky-100 transition">
+                    {u} <span className={`${num} opacity-70`}>({questions.filter(q=>q.unit===u).length})</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Question list grouped by subject/unit */}
+            <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-100">
+              {filteredQs.length === 0
+                ? <div className="p-6 text-center text-xs text-slate-400">No questions match. Try changing filters or upload via Question Bank tab.</div>
+                : Object.entries(groupedFiltered).map(([subject, unitMap]) => (
+                  <div key={subject}>
+                    <div className="sticky top-0 z-10 flex items-center gap-2 bg-violet-50 px-3 py-1.5 border-b border-violet-100">
+                      <GraduationCap size={12} className="text-violet-600 shrink-0"/>
+                      <span className="text-[11px] font-bold text-violet-700">{subject}</span>
+                    </div>
+                    {Object.entries(unitMap).map(([unit, qs]) => (
+                      <div key={unit}>
+                        <div className="flex items-center justify-between px-3 py-1 bg-slate-50 border-b border-slate-100">
+                          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{unit}</span>
+                          <div className="flex items-center gap-2">
+                            <span className={`${num} text-[10px] text-slate-400`}>{qs.filter(q=>selectedIds.has(q.id)).length}/{qs.length} selected</span>
+                            <button onClick={()=>{const ids=qs.map(q=>q.id);const allSel=ids.every(id=>selectedIds.has(id));setSelectedIds(s=>{const n=new Set(s);ids.forEach(id=>allSel?n.delete(id):n.add(id));return n;})}} className="text-[10px] font-semibold text-violet-600 hover:text-violet-800">
+                              {qs.every(q=>selectedIds.has(q.id)) ? "Deselect all" : "Select all"}
+                            </button>
+                          </div>
                         </div>
-                        <p className="text-xs font-medium text-slate-800 line-clamp-2">{q.question}</p>
+                        {qs.map(q => {
+                          const checked = selectedIds.has(q.id);
+                          return (
+                            <label key={q.id} className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer border-b border-slate-50 transition ${checked ? "bg-violet-50/60" : "hover:bg-slate-50"}`}>
+                              <input type="checkbox" checked={checked} onChange={() => toggleQ(q.id)} className="mt-0.5 shrink-0 h-4 w-4 accent-violet-600"/>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-1 mb-0.5">
+                                  {q.topic && q.topic !== "General" && <span className="text-[10px] text-slate-400">{q.topic}</span>}
+                                  {q.difficulty && <Badge tone={diffTone(q.difficulty)}>{q.difficulty}</Badge>}
+                                  <span className={`${num} text-[10px] text-slate-300`}>{q.points||1}pt</span>
+                                </div>
+                                <p className="text-xs font-medium text-slate-800 line-clamp-2">{q.question}</p>
+                              </div>
+                            </label>
+                          );
+                        })}
                       </div>
-                    </label>
-                  );
-                })}
+                    ))}
+                  </div>
+                ))
+              }
             </div>
           </div>
         )}
@@ -953,7 +1039,7 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
 
       <div className="mt-4 flex items-center justify-between gap-2">
         <p className="text-xs text-slate-500">
-          {selectedCount === 0 ? "Pick at least one question above." : `${selectedCount} question${selectedCount===1?"":"s"} across ${derivedUnits.length} unit${derivedUnits.length===1?"":"s"}.`}
+          {selectedCount === 0 ? "Pick at least one question above." : `${selectedCount} Q across ${derivedUnits.length} unit${derivedUnits.length===1?"":"s"} · ${Math.round(minutes)} min`}
         </p>
         <div className="flex gap-2">
           <button className={btnG} onClick={onDone}>Cancel</button>
@@ -963,29 +1049,55 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
     </div>
   );
 }
-
 function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
   const room = classrooms.find(c => c.id === quiz.classroom_id);
   const at  = attempts.filter(a => a.quiz_id === quiz.id).sort((a,b) => b.percent-a.percent);
   const avg = at.length ? Math.round(at.reduce((s,a)=>s+a.percent,0)/at.length) : 0;
-  const passCount = at.filter(a=>a.percent>=60).length;
-  const dist = [0,1,2,3,4,5].map(k => ({ score:`${k}`, count:0 }));
-  at.forEach(a => { const i=Math.min(a.score,5); if(dist[i]) dist[i].count++; });
-  const maxCount = Math.max(1, ...dist.map(d => d.count));
+  const passCount  = at.filter(a=>a.percent>=60).length;
+  const honorsCount= at.filter(a=>a.percent>=80).length;
 
+  // Fix 2: proper percent-bucket distribution (0-20, 21-40, 41-60, 61-80, 81-100)
+  const buckets = [
+    { label:"0–20%",   min:0,  max:20,  color:"bg-rose-500" },
+    { label:"21–40%",  min:21, max:40,  color:"bg-orange-400" },
+    { label:"41–60%",  min:41, max:60,  color:"bg-amber-400" },
+    { label:"61–80%",  min:61, max:80,  color:"bg-violet-500" },
+    { label:"81–100%", min:81, max:100, color:"bg-emerald-500" },
+  ].map(b => ({ ...b, count: at.filter(a=>a.percent>=b.min && a.percent<=b.max).length }));
+  const maxCount = Math.max(1, ...buckets.map(b=>b.count));
+
+  // Time analysis
+  const avgTime = at.length ? Math.round(at.reduce((s,a)=>s+(a.time_used_sec||0),0)/at.length) : 0;
+  const fastCount = at.filter(a=>(a.time_used_sec||0) < quiz.duration_sec*0.3).length;
+
+  // Violation breakdown
+  const flagged = at.filter(a=>a.violations>0).length;
+
+  // Fix 3: Quiz share link
+  const quizLink = `${window.location.origin}?quiz=${quiz.id}`;
+  const [linkCopied, setLinkCopied] = useState(false);
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(quizLink); setLinkCopied(true); setTimeout(()=>setLinkCopied(false), 2500); } catch {}
+  };
+
+  // Fix 4: enriched CSV with student profile fields
   const exportCSV = () => {
-    downloadCSV(`${quiz.title.replace(/\s+/g,"-")}-attempts.csv`, at, [
-      { label: "Student", key: "student_name" },
-      { label: "Attempt #", key: "attempt_number" },
-      { label: "Score", value: r => `${r.score}/${r.max_score}` },
-      { label: "Percent", key: "percent" },
-      { label: "Flags", key: "violations" },
-      { label: "Time Used (s)", key: "time_used_sec" },
-      { label: "Submitted At", value: r => new Date(r.submitted_at).toISOString() },
+    downloadCSV(`${quiz.title.replace(/\s+/g,"-")}-results.csv`, at, [
+      { label: "Student Name",    key: "student_name" },
+      { label: "Course",          value: r => r.student_course   || r.meta?.course   || "" },
+      { label: "Semester",        value: r => r.student_semester || r.meta?.semester || "" },
+      { label: "CU ID",           value: r => r.student_cu_id   || r.meta?.cu_id    || "" },
+      { label: "Phone",           value: r => r.student_phone   || r.meta?.phone    || "" },
+      { label: "Attempt #",       key: "attempt_number" },
+      { label: "Score",           value: r => `${r.score}/${r.max_score}` },
+      { label: "Percent %",       key: "percent" },
+      { label: "Grade",           value: r => r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
+      { label: "Flags",           key: "violations" },
+      { label: "Time Used (s)",   key: "time_used_sec" },
+      { label: "Submitted At",    value: r => new Date(r.submitted_at).toLocaleString() },
     ]);
   };
 
-  // Resolve created_by to a name if available
   const creatorName = quiz.created_by && profiles
     ? profiles.find(p => p.id === quiz.created_by)?.full_name
     : null;
@@ -993,99 +1105,249 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
   return (
     <div className="space-y-5">
       <button className={`${btnG} w-fit`} onClick={onBack}><ChevronLeft size={15}/> Back</button>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <Badge tone="violet">Week {quiz.week}</Badge>
-          <Badge tone={room ? "sky" : "amber"}><School size={11}/> {room ? `${room.name}${room.section?` · ${room.section}`:""}${room.year?` (${room.year})`:""}` : "All students"}</Badge>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="violet">Week {quiz.week}</Badge>
+            <Badge tone={room?"sky":"amber"}><School size={11}/> {room?`${room.name}${room.section?` · ${room.section}`:""}${room.year?` (${room.year})`:""}` : "All students"}</Badge>
+            {creatorName && <span className="text-xs text-slate-400">by {creatorName}</span>}
+          </div>
           <h3 className="text-xl font-extrabold text-slate-900">{quiz.title}</h3>
-          {creatorName && <span className="text-xs text-slate-400">by {creatorName}</span>}
         </div>
-        <button className={btnG} onClick={exportCSV}><FileDown size={14}/> Export CSV</button>
+        <div className="flex flex-wrap gap-2">
+          {/* Fix 3: Copy quiz link */}
+          <button onClick={copyLink} className={`${btnG} gap-2`}>
+            {linkCopied ? <><CheckCircle2 size={14} className="text-emerald-500"/> Copied!</> : <><span className="text-xs">Copy quiz link</span></>}
+          </button>
+          <button className={btnG} onClick={exportCSV}><FileDown size={14}/> Export CSV</button>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Stat icon={Users} label="Attempts" value={at.length} tone="sky"/>
-        <Stat icon={Award} label="Avg" value={`${avg}%`} tone="violet"/>
-        <Stat icon={CheckCircle2} label="Pass rate" value={at.length?`${Math.round(passCount/at.length*100)}%`:"—"} tone="emerald"/>
-        <Stat icon={Clock} label="Duration" value={`${Math.round(quiz.duration_sec/60)}m`} tone="slate"/>
+
+      {/* Fix 3: Quiz link card */}
+      <div className={`${card} border-violet-100 bg-violet-50/40 p-4 flex flex-wrap items-center gap-3`}>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-violet-700 mb-1">Quiz link — share directly with students</p>
+          <code className="text-xs text-slate-600 font-mono break-all">{quizLink}</code>
+        </div>
+        <button onClick={copyLink} className={`${btnP} shrink-0`}>
+          {linkCopied ? <><CheckCircle2 size={14}/> Copied!</> : <>Copy link</>}
+        </button>
       </div>
+
+      {/* Fix 2: Rich stats */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <Stat icon={Users}       label="Attempts"  value={at.length}                               tone="sky"/>
+        <Stat icon={Award}       label="Avg score" value={`${avg}%`}                               tone="violet"/>
+        <Stat icon={CheckCircle2}label="Pass rate" value={at.length?`${Math.round(passCount/at.length*100)}%`:"—"} tone="emerald"/>
+        <Stat icon={Trophy}      label="Honors"    value={at.length?`${Math.round(honorsCount/at.length*100)}%`:"—"} sub="≥80%" tone="amber"/>
+        <Stat icon={ShieldAlert} label="Flagged"   value={at.length?`${Math.round(flagged/at.length*100)}%`:"—"} sub={`${flagged} students`} tone="rose"/>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-3">
+        {/* Fix 2: Score distribution - proper % buckets with colors */}
         <div className={`${card} p-5`}>
-          <h4 className="mb-1 text-sm font-bold text-slate-900">Score distribution</h4>
-          <p className="mb-4 text-xs text-slate-400">Students per score</p>
-          <div className="flex h-40 items-end gap-2">
-            {dist.map(d => (
-              <div key={d.score} className="flex flex-1 flex-col items-center gap-1.5">
+          <h4 className="mb-0.5 text-sm font-bold text-slate-900">Score distribution</h4>
+          <p className="mb-4 text-xs text-slate-400">Students per score band</p>
+          <div className="flex h-36 items-end gap-2">
+            {buckets.map(b => (
+              <div key={b.label} className="flex flex-1 flex-col items-center gap-1">
+                <span className={`text-[11px] font-bold ${num} text-slate-700`}>{b.count}</span>
                 <div className="flex w-full flex-1 items-end">
-                  <div className="w-full rounded-t-lg bg-violet-600 transition-all" style={{ height: `${(d.count/maxCount)*100}%`, minHeight: d.count > 0 ? 4 : 0 }} />
+                  <div className={`w-full rounded-t-lg ${b.color} transition-all`} style={{ height:`${(b.count/maxCount)*100}%`, minHeight:b.count>0?6:0 }}/>
                 </div>
-                <span className={`text-[11px] font-semibold text-slate-600 ${num}`}>{d.count}</span>
-                <span className="text-[10px] text-slate-400">{d.score}</span>
+                <span className="text-[9px] text-slate-400 text-center leading-tight">{b.label}</span>
+              </div>
+            ))}
+          </div>
+          {/* Pass line indicator */}
+          <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+            <div className="h-px flex-1 border-t-2 border-dashed border-emerald-300"/>
+            <span>60% pass line</span>
+            <div className="h-px flex-1 border-t-2 border-dashed border-emerald-300"/>
+          </div>
+          {/* Avg, pass, honors mini-bars */}
+          <div className="mt-4 space-y-2">
+            {[
+              { label:"Class average", pct:avg, color:"bg-violet-500" },
+              { label:"Pass rate",     pct:at.length?Math.round(passCount/at.length*100):0,   color:"bg-emerald-500" },
+              { label:"Honors rate",   pct:at.length?Math.round(honorsCount/at.length*100):0, color:"bg-amber-400" },
+            ].map(r => (
+              <div key={r.label}>
+                <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500">{r.label}</span>
+                  <span className={`${num} font-bold text-slate-800`}>{r.pct}%</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-slate-100">
+                  <div className={`h-full rounded-full ${r.color} transition-all`} style={{ width:`${r.pct}%` }}/>
+                </div>
               </div>
             ))}
           </div>
         </div>
+
+        {/* Attempts table - Fix 4: show course if present */}
         <div className={`${card} overflow-hidden lg:col-span-2`}>
           <div className="border-b border-slate-100 px-5 py-3.5 flex items-center justify-between">
             <h4 className="text-sm font-bold text-slate-900">All attempts</h4>
-            <span className="text-xs text-slate-400">{at.length} total</span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400">{at.length} total · avg {fmtTime(avgTime)}</span>
+              {fastCount>0&&<Badge tone="amber">{fastCount} unusually fast</Badge>}
+            </div>
           </div>
           <div className="overflow-auto max-h-72">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
-                <tr><th className="px-5 py-2.5">Student</th><th className="px-3 py-2.5 text-center">#</th><th className="px-3 py-2.5 text-right">Score</th><th className="px-3 py-2.5 text-right">%</th><th className="px-3 py-2.5 text-center">Flags</th><th className="px-3 py-2.5 text-right hidden sm:table-cell">Time</th><th className="px-5 py-2.5 text-right hidden md:table-cell">Date</th></tr>
+                <tr>
+                  <th className="px-4 py-2.5">Student</th>
+                  <th className="px-3 py-2.5 hidden sm:table-cell">Course</th>
+                  <th className="px-3 py-2.5 text-right">Score</th>
+                  <th className="px-3 py-2.5 text-right">%</th>
+                  <th className="px-3 py-2.5 text-center">Flags</th>
+                  <th className="px-4 py-2.5 text-right hidden md:table-cell">Date</th>
+                </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {!at.length && <tr><td colSpan={7} className="px-5 py-10 text-center text-slate-400">No attempts yet.</td></tr>}
-                {at.map(a => (
-                  <tr key={a.id} className="hover:bg-slate-50/60 transition">
-                    <td className="px-5 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="grid h-6 w-6 place-items-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-600">{(a.student_name||"?").charAt(0)}</div>
-                        <span className="font-medium text-slate-800">{a.student_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-center"><Badge tone="slate">{a.attempt_number}</Badge></td>
-                    <td className={`px-3 py-2.5 text-right ${num} text-slate-600`}>{a.score}/{a.max_score}</td>
-                    <td className="px-3 py-2.5 text-right"><span className={`font-bold ${num} ${a.percent>=80?"text-emerald-600":a.percent>=60?"text-violet-600":"text-rose-600"}`}>{a.percent}%</span></td>
-                    <td className="px-3 py-2.5 text-center"><Badge tone={vTone(a.violations)}>{a.violations}</Badge></td>
-                    <td className={`px-3 py-2.5 text-right ${num} text-slate-400 hidden sm:table-cell`}>{fmtTime(a.time_used_sec)}</td>
-                    <td className="px-5 py-2.5 text-right text-xs text-slate-400 hidden md:table-cell">{dateStr(a.submitted_at)}</td>
-                  </tr>
-                ))}
+                {!at.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400">No attempts yet.</td></tr>}
+                {at.map(a => {
+                  const course = a.student_course || a.meta?.course || "";
+                  const fast = (a.time_used_sec||0) < quiz.duration_sec * 0.3;
+                  return (
+                    <tr key={a.id} className="hover:bg-slate-50/60 transition">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-600">{(a.student_name||"?").charAt(0)}</div>
+                          <div>
+                            <p className="font-medium text-slate-800 text-xs">{a.student_name}</p>
+                            {a.meta?.cu_id && <p className="text-[10px] text-slate-400">{a.meta.cu_id}</p>}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell">
+                        {course ? <Badge tone="slate">{course}</Badge> : <span className="text-[10px] text-slate-300">—</span>}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right ${num} text-slate-600 text-xs`}>{a.score}/{a.max_score}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`font-bold ${num} text-xs ${a.percent>=80?"text-emerald-600":a.percent>=60?"text-violet-600":a.percent>=40?"text-amber-600":"text-rose-600"}`}>{a.percent}%</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <Badge tone={vTone(a.violations)}>{a.violations}</Badge>
+                          {fast && <Badge tone="amber" title="Submitted unusually fast">fast</Badge>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-xs text-slate-400 hidden md:table-cell">{dateStr(a.submitted_at)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-          <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-400">Flags = window switches + fullscreen exits. Signals, not evidence.</div>
+          <div className="border-t border-slate-100 px-5 py-2.5 text-[11px] text-slate-400">Flags = window switches + fullscreen exits. Signals, not evidence.</div>
         </div>
       </div>
     </div>
   );
 }
+const COURSES = ["MBA","BBA","BCom (Hons)","BCom (CFA)","MCA","BTech (CS)","BTech (AI/ML)","BCA","BTech (EC/ME)","BTech (IT)","Other"];
+const SEMESTERS = ["1st","2nd","3rd","4th","5th","6th","7th","8th"];
 
-/* ================================================================== */
-/* STUDENT                                                            */
-/* ================================================================== */
+function StudentProfileModal({ userId, onSave }) {
+  const pKey = `quizpro:profile:${userId}`;
+  const saved = useMemo(()=>{ try { return JSON.parse(localStorage.getItem(pKey)||"{}"); } catch{return{};} },[pKey]);
+  const [course,    setCourse]   = useState(saved.course    || "");
+  const [semester,  setSemester] = useState(saved.semester  || "");
+  const [cuId,      setCuId]     = useState(saved.cu_id     || "");
+  const [phone,     setPhone]    = useState(saved.phone     || "");
+  const ready = course && semester && cuId.trim();
+  const save = () => {
+    const p = { course, semester, cu_id: cuId.trim(), phone: phone.trim() };
+    try { localStorage.setItem(pKey, JSON.stringify(p)); } catch {}
+    onSave(p);
+  };
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
+      <div className={`${card} w-full max-w-md p-6 space-y-5`}>
+        <div>
+          <h3 className="text-lg font-extrabold text-slate-900">Student profile</h3>
+          <p className="mt-1 text-xs text-slate-500">Required once — saved on this device. Your details appear in the faculty report and CSV export.</p>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-slate-500">Course *</label>
+          <select className={inp} value={course} onChange={e=>setCourse(e.target.value)}>
+            <option value="">Select your programme…</option>
+            {COURSES.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Semester *</label>
+            <select className={inp} value={semester} onChange={e=>setSemester(e.target.value)}>
+              <option value="">Select…</option>
+              {SEMESTERS.map(s=><option key={s} value={s}>{s} sem</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">CU ID / Roll No. *</label>
+            <input className={inp} placeholder="e.g. 20BCE1234" value={cuId} onChange={e=>setCuId(e.target.value.toUpperCase())}/>
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-slate-500">Phone (optional)</label>
+          <input className={inp} type="tel" placeholder="10-digit mobile number" maxLength={10} value={phone} onChange={e=>setPhone(e.target.value.replace(/\D/g,""))}/>
+        </div>
+        <button className={`${btnP} w-full justify-center`} disabled={!ready} onClick={save}>
+          Save &amp; continue to quiz
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classrooms, setClassrooms, user, profile }) {
-  const [screen, setScreen]       = useState("home");
+  const [screen, setScreen]         = useState("home");
   const [activeQuiz, setActiveQuiz] = useState(null);
-  const [lastAttempt, setLast]    = useState(null);
+  const [lastAttempt, setLast]      = useState(null);
+  const [studentMeta, setStudentMeta] = useState(null);
+  const [needsProfile, setNeedsProfile] = useState(false);
+
+  const pKey = `quizpro:profile:${user.id}`;
+  const loadMeta = () => { try { const m = JSON.parse(localStorage.getItem(pKey)||"null"); return m?.course&&m?.cu_id ? m : null; } catch{return null;} };
 
   const onSubmit = async (attempt) => {
     try {
-      const saved = await insertAttempt(attempt);
+      const meta = studentMeta || loadMeta() || {};
+      const saved = await insertAttempt({
+        ...attempt,
+        student_course:   meta.course   || null,
+        student_semester: meta.semester || null,
+        student_cu_id:    meta.cu_id    || null,
+        student_phone:    meta.phone    || null,
+        meta,
+      });
       setAttempts(prev => [...prev, saved]);
-      localStorage.removeItem(draftKey(attempt.quiz_id, attempt.user_id)); // clear backup on success
+      localStorage.removeItem(draftKey(attempt.quiz_id, attempt.user_id));
       setLast(saved);
       setScreen("result");
-    } catch (err) {
-      throw err; // let Exam component handle retry UI
+    } catch (err) { throw err; }
+  };
+
+  const startQuiz = (qz) => {
+    const meta = loadMeta();
+    if (!meta) {
+      setActiveQuiz(qz);
+      setNeedsProfile(true);
+    } else {
+      setStudentMeta(meta);
+      setActiveQuiz(qz);
+      setScreen("rules");
     }
   };
 
+  if (needsProfile && activeQuiz) return <StudentProfileModal userId={user.id} onSave={meta=>{ setStudentMeta(meta); setNeedsProfile(false); setScreen("rules"); }}/>;
   if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile.full_name} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
   if (screen==="exam"   && activeQuiz) return <Exam questions={questions} quiz={activeQuiz} user={user} profile={profile} attempts={attempts} onSubmit={onSubmit} onAbort={() => setScreen("home")}/>;
   if (screen==="result" && lastAttempt) return <Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} name={profile.full_name} onHome={() => setScreen("home")}/>;
-  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile.full_name} onStart={qz => { setActiveQuiz(qz); setScreen("rules"); }}/>;
+  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile.full_name} onStart={startQuiz}/>;
 }
 
 function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, setClassrooms, name, onStart }) {
