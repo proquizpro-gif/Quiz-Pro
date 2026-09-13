@@ -6,6 +6,7 @@ import {
   LogOut, AlertCircle, RotateCcw,
   PlayCircle, PauseCircle, CalendarClock, FileDown, ShieldAlert,
   School, LogIn, Edit3, Save, GraduationCap,
+  Target, Copy, Printer, Flag, Wifi, WifiOff,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import {
@@ -200,7 +201,7 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
       {tab==="classrooms" && <ClassroomManager classrooms={classrooms} setClassrooms={setClassrooms}/>}
       {tab==="bank"       && <QuestionBank questions={questions} setQuestions={setQuestions}/>}
       {tab==="quizzes"    && (openQuiz
-        ? <QuizDetail quizzes={quizzes} quiz={openQuiz} attempts={attempts} classrooms={classrooms} profiles={null} onBack={() => setOpenQuiz(null)}/>
+        ? <QuizDetail quizzes={quizzes} quiz={openQuiz} questions={questions} attempts={attempts} classrooms={classrooms} profiles={null} onBack={() => setOpenQuiz(null)}/>
         : <QuizManager questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} attempts={attempts} classrooms={classrooms} onOpen={setOpenQuiz}/>)}
     </div>
   );
@@ -580,6 +581,23 @@ function QuizManager({ questions, quizzes, setQuizzes, attempts, classrooms, onO
     } catch (err) { toast2(err.message, "rose"); }
   };
 
+  const cloneQuiz = async (qz) => {
+    try {
+      const { id, created_at, ...rest } = qz;
+      const copy = await insertQuiz({
+        ...rest,
+        title: `${qz.title} (copy)`,
+        is_open: false,          // never auto-publish a clone
+        open_at: null,
+        close_at: null,
+        created_by: user.id,
+      });
+      setQuizzes(prev => [...prev, copy]);
+      toast2(`Cloned as "${copy.title}" — closed, so you can retime it before publishing.`);
+      logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "quiz.clone", target: qz.title, meta: { from: qz.id } });
+    } catch (err) { toast2(err.message, "rose"); }
+  };
+
   const doReopen = async ({ newCloseAt, clearClose }) => {
     const qz = reopenTarget; if (!qz) return;
     const patch = { is_open: true };
@@ -624,6 +642,7 @@ function QuizManager({ questions, quizzes, setQuizzes, attempts, classrooms, onO
                   <h4 className="mt-2 font-bold text-slate-900">{qz.title}</h4>
                 </div>
                 <div className="flex items-center gap-1">
+                  <button className={btnG} onClick={() => cloneQuiz(qz)} title="Duplicate for another section"><Copy size={14}/></button>
                   <button className={btnG} onClick={() => setEditTarget(qz)} title="Edit quiz"><Edit3 size={14}/></button>
                   <button className={btnG} onClick={() => onOpen(qz)}><Eye size={14}/> View</button>
                   <button onClick={() => removeQuiz(qz.id)} className="rounded-xl p-2.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500 transition" title="Delete"><Trash2 size={14}/></button>
@@ -1049,7 +1068,248 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
     </div>
   );
 }
-function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
+/* ──────────────────────────────────────────────────────────────────
+   ITEM ANALYSIS — per-question psychometrics.
+
+   Two standard measures from classical test theory:
+
+   • Difficulty index (p) = proportion who answered correctly.
+     0.30–0.80 is the healthy band. Above 0.90 the item teaches you
+     nothing (everyone knows it); below 0.20 it is usually broken or
+     the topic was never taught.
+
+   • Discrimination index (D) = (correct rate in top 27% of scorers)
+     − (correct rate in bottom 27%). A good item is one strong
+     students get right and weak students get wrong, so D should be
+     positive. D < 0 means the item is INVERTED — your best students
+     are getting it wrong, which almost always means a wrong answer
+     key or an ambiguous stem. That is the single most valuable
+     signal this screen produces.
+   ────────────────────────────────────────────────────────────────── */
+function computeItemAnalysis(attempts) {
+  const withItems = attempts.filter(a => Array.isArray(a.items) && a.items.length);
+  if (withItems.length < 1) return [];
+
+  const ranked = [...withItems].sort((a, b) => b.percent - a.percent);
+  const groupSize = Math.max(1, Math.round(ranked.length * 0.27));
+  const topIds = new Set(ranked.slice(0, groupSize).map(a => a.id));
+  const botIds = new Set(ranked.slice(-groupSize).map(a => a.id));
+
+  const byQ = new Map();
+  for (const att of withItems) {
+    for (const it of att.items) {
+      const key = it.qid || it.question;
+      if (!key) continue;
+      if (!byQ.has(key)) {
+        byQ.set(key, {
+          key, question: it.question, options: it.options || [], correct: it.correct,
+          seen: 0, right: 0, skipped: 0,
+          picks: new Array((it.options || []).length).fill(0),
+          topSeen: 0, topRight: 0, botSeen: 0, botRight: 0,
+        });
+      }
+      const r = byQ.get(key);
+      r.seen++;
+      const ok = it.chosen === it.correct;
+      if (ok) r.right++;
+      if (it.chosen === null || it.chosen === undefined) r.skipped++;
+      else if (r.picks[it.chosen] !== undefined) r.picks[it.chosen]++;
+      if (topIds.has(att.id)) { r.topSeen++; if (ok) r.topRight++; }
+      if (botIds.has(att.id)) { r.botSeen++; if (ok) r.botRight++; }
+    }
+  }
+
+  return [...byQ.values()].map(r => {
+    const p = r.seen ? r.right / r.seen : 0;
+    const topRate = r.topSeen ? r.topRight / r.topSeen : 0;
+    const botRate = r.botSeen ? r.botRight / r.botSeen : 0;
+    const d = topRate - botRate;
+    let verdict = "good", note = "Healthy item.";
+    if (d < 0)          { verdict = "inverted"; note = "Top scorers got this WRONG more than weak ones — check the answer key."; }
+    else if (p >= 0.95) { verdict = "tooEasy";  note = "Nearly everyone got it. Adds little information."; }
+    else if (p <= 0.20) { verdict = "tooHard";  note = "Almost nobody got it. Reteach the topic, or the stem may be unclear."; }
+    else if (d < 0.15)  { verdict = "weak";     note = "Barely separates strong from weak students."; }
+    return { ...r, p, d, topRate, botRate, verdict, note };
+  }).sort((a, b) => a.p - b.p);
+}
+
+function ItemAnalysis({ attempts }) {
+  const rows = useMemo(() => computeItemAnalysis(attempts), [attempts]);
+  const [open, setOpen]   = useState(false);
+  const [only, setOnly]   = useState("problems");
+
+  if (!rows.length) return null;
+
+  const problems = rows.filter(r => r.verdict !== "good");
+  const shown = only === "problems" ? problems : rows;
+  const tone = v => v === "inverted" ? "rose" : v === "tooHard" ? "amber" : v === "tooEasy" ? "sky" : v === "weak" ? "slate" : "emerald";
+  const label = v => v === "inverted" ? "Check key" : v === "tooHard" ? "Too hard" : v === "tooEasy" ? "Too easy" : v === "weak" ? "Weak" : "Good";
+  const inverted = rows.filter(r => r.verdict === "inverted").length;
+
+  const exportItems = () => downloadCSV("item-analysis.csv", rows, [
+    { label: "Question",          key: "question" },
+    { label: "Times answered",    key: "seen" },
+    { label: "Correct",           key: "right" },
+    { label: "Skipped",           key: "skipped" },
+    { label: "Difficulty (p)",    value: r => r.p.toFixed(2) },
+    { label: "Discrimination (D)",value: r => r.d.toFixed(2) },
+    { label: "Verdict",           value: r => label(r.verdict) },
+    { label: "Correct answer",    value: r => r.options[r.correct] ?? "" },
+  ]);
+
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <button onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between p-5 text-left transition hover:bg-slate-50">
+        <div>
+          <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+            <Target size={15} className="text-violet-600"/> Question analysis
+            {inverted > 0 && <Badge tone="rose">{inverted} need{inverted===1?"s":""} review</Badge>}
+          </h4>
+          <p className="mt-0.5 text-xs text-slate-400">
+            {problems.length ? `${problems.length} of ${rows.length} questions flagged` : `All ${rows.length} questions look healthy`}
+          </p>
+        </div>
+        <ChevronLeft size={16} className={`shrink-0 text-slate-400 transition-transform ${open ? "-rotate-90" : "rotate-180"}`}/>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex gap-1">
+              <button onClick={() => setOnly("problems")} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${only==="problems"?"bg-violet-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>Needs attention ({problems.length})</button>
+              <button onClick={() => setOnly("all")}      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${only==="all"?"bg-violet-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>All ({rows.length})</button>
+            </div>
+            <button onClick={exportItems} className={`${btnG} !py-1.5 !px-3 !text-xs`}><FileDown size={12}/> Export</button>
+          </div>
+
+          {!shown.length && <Empty icon={CheckCircle2} title="No problem questions" hint="Every item is discriminating well. Nothing to fix."/>}
+
+          <div className="space-y-3">
+            {shown.map(r => (
+              <div key={r.key} className={`rounded-xl border p-4 ${r.verdict==="inverted"?"border-rose-200 bg-rose-50/40":"border-slate-200"}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <p className="flex-1 text-sm font-medium text-slate-800">{r.question}</p>
+                  <Badge tone={tone(r.verdict)}>{label(r.verdict)}</Badge>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-4 text-xs">
+                  <span className="text-slate-500">Correct: <span className={`${num} font-bold text-slate-800`}>{Math.round(r.p*100)}%</span> <span className="text-slate-400">({r.right}/{r.seen})</span></span>
+                  <span className="text-slate-500">Discrimination: <span className={`${num} font-bold ${r.d<0?"text-rose-600":r.d<0.15?"text-amber-600":"text-emerald-600"}`}>{r.d>=0?"+":""}{r.d.toFixed(2)}</span></span>
+                  {r.skipped>0 && <span className="text-slate-500">Skipped: <span className={`${num} font-bold text-slate-800`}>{r.skipped}</span></span>}
+                </div>
+
+                {/* Distractor spread — where the wrong answers went */}
+                <div className="mt-3 space-y-1.5">
+                  {r.options.map((opt, i) => {
+                    const n = r.picks[i] || 0;
+                    const pctPick = r.seen ? Math.round((n/r.seen)*100) : 0;
+                    const isRight = i === r.correct;
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold ${isRight?"bg-emerald-500 text-white":"bg-slate-100 text-slate-500"}`}>{"ABCD"[i]}</span>
+                        <span className={`min-w-0 flex-1 truncate text-xs ${isRight?"font-semibold text-emerald-700":"text-slate-500"}`}>{opt}</span>
+                        <div className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-slate-100">
+                          <div className={`h-full rounded-full ${isRight?"bg-emerald-500":"bg-slate-300"}`} style={{ width:`${pctPick}%` }}/>
+                        </div>
+                        <span className={`${num} w-9 shrink-0 text-right text-[11px] text-slate-400`}>{pctPick}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {r.verdict !== "good" && (
+                  <p className={`mt-3 text-[11px] ${r.verdict==="inverted"?"font-semibold text-rose-700":"text-slate-500"}`}>{r.note}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <p className="border-t border-slate-100 pt-3 text-[11px] leading-relaxed text-slate-400">
+            Discrimination compares your top 27% of scorers against the bottom 27%. A negative value means strong students missed it more often than weak ones — nearly always a wrong answer key or an ambiguous question.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Printable question paper + separate answer key. Universities still
+   run paper backups when the campus wifi drops mid-exam, and invigilators
+   want a key they can mark against without a laptop. Opens a clean print
+   window so it works on any device with no extra dependency. */
+function printQuizPaper(quiz, questions, { withKey }) {
+  const qs = Array.isArray(quiz.question_ids) && quiz.question_ids.length
+    ? quiz.question_ids.map(id => questions.find(q => q.id === id)).filter(Boolean)
+    : questions.filter(q => (quiz.units || []).includes(q.unit));
+
+  if (!qs.length) { alert("This quiz has no questions to print."); return; }
+
+  const esc = t => String(t ?? "").replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+  const total = qs.reduce((sum, q) => sum + (q.points || 1), 0);
+
+  const body = qs.map((q, i) => `
+    <div class="q">
+      <div class="stem"><span class="n">${i + 1}.</span><span>${esc(q.question)}</span><span class="pts">[${q.points || 1}]</span></div>
+      <ol class="opts">
+        ${q.options.map((o, oi) => `<li class="${withKey && oi === q.correct ? "key" : ""}">${esc(o)}</li>`).join("")}
+      </ol>
+    </div>`).join("");
+
+  const keyTable = withKey ? `
+    <div class="keybox">
+      <h2>Answer key</h2>
+      <table>${qs.map((q, i) =>
+        `<tr><td class="kn">${i + 1}</td><td class="kv">${"ABCD"[q.correct]}</td></tr>`
+      ).join("")}</table>
+    </div>` : "";
+
+  const w = window.open("", "_blank");
+  if (!w) { alert("Your browser blocked the print window. Allow pop-ups for this site and try again."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(quiz.title)}</title><style>
+    @page { margin: 18mm 16mm; }
+    * { box-sizing: border-box; }
+    body { font: 11pt/1.5 Georgia, "Times New Roman", serif; color: #111; margin: 0; }
+    header { border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 18px; }
+    h1 { font-size: 16pt; margin: 0 0 4px; }
+    .meta { font-size: 9.5pt; color: #444; display: flex; gap: 18px; flex-wrap: wrap; }
+    .fill { margin: 14px 0 20px; font-size: 10pt; display: flex; gap: 26px; flex-wrap: wrap; }
+    .fill span { border-bottom: 1px solid #999; min-width: 150px; padding-bottom: 2px; }
+    .q { margin-bottom: 14px; page-break-inside: avoid; }
+    .stem { display: flex; gap: 7px; font-weight: 600; align-items: baseline; }
+    .n { min-width: 22px; }
+    .pts { margin-left: auto; font-weight: 400; color: #666; font-size: 9pt; }
+    ol.opts { list-style: upper-alpha; margin: 6px 0 0 46px; padding: 0; }
+    ol.opts li { margin-bottom: 2px; }
+    ol.opts li.key { font-weight: 700; }
+    ol.opts li.key::after { content: "  \\2713"; color: #000; }
+    .keybox { page-break-before: always; padding-top: 8px; }
+    .keybox h2 { font-size: 13pt; margin: 0 0 10px; }
+    .keybox table { border-collapse: collapse; }
+    .keybox td { border: 1px solid #999; padding: 3px 11px; font-size: 10pt; text-align: center; }
+    .kn { background: #f0f0f0; font-weight: 600; }
+    .kv { font-weight: 700; }
+    footer { margin-top: 26px; border-top: 1px solid #bbb; padding-top: 7px; font-size: 8.5pt; color: #666; text-align: center; }
+  </style></head><body>
+    <header>
+      <h1>${esc(quiz.title)}</h1>
+      <div class="meta">
+        <span>Week ${esc(quiz.week)}</span>
+        <span>Duration: ${Math.round(quiz.duration_sec / 60)} minutes</span>
+        <span>Questions: ${qs.length}</span>
+        <span>Max marks: ${total}</span>
+      </div>
+    </header>
+    ${withKey ? "" : `<div class="fill"><span>Name:</span><span>CU ID:</span><span>Course &amp; Sem:</span><span>Signature:</span></div>`}
+    ${body}
+    ${keyTable}
+    <footer>Generated by QuizPro on ${new Date().toLocaleDateString()}${withKey ? " — ANSWER KEY, do not distribute to students" : ""}</footer>
+  </body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 350);
+}
+
+function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profiles, onBack }) {
   const room = classrooms.find(c => c.id === quiz.classroom_id);
   const at  = attempts.filter(a => a.quiz_id === quiz.id).sort((a,b) => b.percent-a.percent);
   const avg = at.length ? Math.round(at.reduce((s,a)=>s+a.percent,0)/at.length) : 0;
@@ -1073,6 +1333,25 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
   // Violation breakdown
   const flagged = at.filter(a=>a.violations>0).length;
 
+  // Roster search + risk filter — a 60-student table is unusable without it
+  const [q, setQ] = useState("");
+  const [lens, setLens] = useState("all");
+  const visible = useMemo(() => {
+    let v = at;
+    if (lens === "failed")  v = v.filter(a => a.percent < 60);
+    if (lens === "flagged") v = v.filter(a => (a.violations||0) > 0);
+    if (lens === "honors")  v = v.filter(a => a.percent >= 80);
+    if (q.trim()) {
+      const t = q.toLowerCase();
+      v = v.filter(a =>
+        (a.student_name||"").toLowerCase().includes(t) ||
+        (a.meta?.cu_id||a.student_cu_id||"").toLowerCase().includes(t) ||
+        (a.meta?.course||a.student_course||"").toLowerCase().includes(t)
+      );
+    }
+    return v;
+  }, [at, q, lens]);
+
   // Fix 3: Quiz share link
   const quizLink = `${window.location.origin}?quiz=${quiz.id}`;
   const [linkCopied, setLinkCopied] = useState(false);
@@ -1082,7 +1361,7 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
 
   // Fix 4: enriched CSV with student profile fields
   const exportCSV = () => {
-    downloadCSV(`${quiz.title.replace(/\s+/g,"-")}-results.csv`, at, [
+    downloadCSV(`${quiz.title.replace(/\s+/g,"-")}-results.csv`, visible, [
       { label: "Student Name",    key: "student_name" },
       { label: "Course",          value: r => r.student_course   || r.meta?.course   || "" },
       { label: "Semester",        value: r => r.student_semester || r.meta?.semester || "" },
@@ -1119,6 +1398,8 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
           <button onClick={copyLink} className={`${btnG} gap-2`}>
             {linkCopied ? <><CheckCircle2 size={14} className="text-emerald-500"/> Copied!</> : <><span className="text-xs">Copy quiz link</span></>}
           </button>
+          <button className={btnG} onClick={() => printQuizPaper(quiz, questions, { withKey:false })} title="Printable paper for offline backup"><Printer size={14}/> Paper</button>
+          <button className={btnG} onClick={() => printQuizPaper(quiz, questions, { withKey:true })} title="Answer key for marking"><Printer size={14}/> Key</button>
           <button className={btnG} onClick={exportCSV}><FileDown size={14}/> Export CSV</button>
         </div>
       </div>
@@ -1190,9 +1471,18 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
           <div className="border-b border-slate-100 px-5 py-3.5 flex items-center justify-between">
             <h4 className="text-sm font-bold text-slate-900">All attempts</h4>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{at.length} total · avg {fmtTime(avgTime)}</span>
+              <span className="text-xs text-slate-400">{visible.length === at.length ? `${at.length} total` : `${visible.length} of ${at.length}`} · avg {fmtTime(avgTime)}</span>
               {fastCount>0&&<Badge tone="amber">{fastCount} unusually fast</Badge>}
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-2.5">
+            <div className="relative min-w-[180px] flex-1">
+              <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+              <input className={`${inp} !py-1.5 pl-8 text-xs`} placeholder="Search name, CU ID, or course…" value={q} onChange={e=>setQ(e.target.value)}/>
+            </div>
+            {[["all","All"],["failed","Below 60%"],["flagged","Flagged"],["honors","Honors"]].map(([k,lbl]) => (
+              <button key={k} onClick={()=>setLens(k)} className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition ${lens===k?"bg-violet-600 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{lbl}</button>
+            ))}
           </div>
           <div className="overflow-auto max-h-72">
             <table className="w-full text-sm">
@@ -1207,8 +1497,8 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {!at.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400">No attempts yet.</td></tr>}
-                {at.map(a => {
+                {!visible.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400">{at.length ? "No students match this filter." : "No attempts yet."}</td></tr>}
+                {visible.map(a => {
                   const course = a.student_course || a.meta?.course || "";
                   const fast = (a.time_used_sec||0) < quiz.duration_sec * 0.3;
                   return (
@@ -1245,6 +1535,8 @@ function QuizDetail({ quizzes, quiz, attempts, classrooms, profiles, onBack }) {
           <div className="border-t border-slate-100 px-5 py-2.5 text-[11px] text-slate-400">Flags = window switches + fullscreen exits. Signals, not evidence.</div>
         </div>
       </div>
+
+      <ItemAnalysis attempts={at}/>
     </div>
   );
 }
@@ -1313,6 +1605,32 @@ function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classr
   const pKey = `quizpro:profile:${user.id}`;
   const loadMeta = () => { try { const m = JSON.parse(localStorage.getItem(pKey)||"null"); return m?.course&&m?.cu_id ? m : null; } catch{return null;} };
 
+  // Deep link: ?quiz=<id> opens that quiz directly (faculty paste the link
+  // into a class group). The id is captured once on mount, but resolution
+  // waits for the quiz list to actually arrive — resolving against an empty
+  // array would wrongly report the quiz as unavailable.
+  const startQuizRef = useRef(null);
+  const [deepLinkMsg, setDeepLinkMsg] = useState(null);
+  const deepLinkId = useRef(new URLSearchParams(window.location.search).get("quiz"));
+  const deepLinkDone = useRef(false);
+
+  useEffect(() => {
+    const id = deepLinkId.current;
+    if (!id || deepLinkDone.current) return;
+    if (!quizzes.length) return;            // still loading — try again next render
+    deepLinkDone.current = true;
+    window.history.replaceState({}, "", window.location.pathname);
+
+    const qz = quizzes.find(q => q.id === id);
+    if (!qz) {
+      setDeepLinkMsg("That quiz isn't shared with you yet. Join the classroom using its code, then open the link again.");
+      return;
+    }
+    const avail = quizAvailability(qz);
+    if (!avail.available) { setDeepLinkMsg(`"${qz.title}" is ${avail.label.toLowerCase()}.`); return; }
+    startQuizRef.current?.(qz);
+  }, [quizzes]);
+
   const onSubmit = async (attempt) => {
     try {
       const meta = studentMeta || loadMeta() || {};
@@ -1343,18 +1661,23 @@ function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classr
     }
   };
 
+  startQuizRef.current = startQuiz;
+
   if (needsProfile && activeQuiz) return <StudentProfileModal userId={user.id} onSave={meta=>{ setStudentMeta(meta); setNeedsProfile(false); setScreen("rules"); }}/>;
-  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile.full_name} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
+  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile.full_name} userId={user.id} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
   if (screen==="exam"   && activeQuiz) return <Exam questions={questions} quiz={activeQuiz} user={user} profile={profile} attempts={attempts} onSubmit={onSubmit} onAbort={() => setScreen("home")}/>;
   if (screen==="result" && lastAttempt) return <Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} name={profile.full_name} onHome={() => setScreen("home")}/>;
-  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile.full_name} onStart={startQuiz}/>;
+  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile.full_name} userId={user.id} onStart={startQuiz} deepLinkMsg={deepLinkMsg} onDismissDeepLink={()=>setDeepLinkMsg(null)}/>;
 }
 
-function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, setClassrooms, name, onStart }) {
+function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, setClassrooms, name, userId, onStart, deepLinkMsg, onDismissDeepLink }) {
+  // Scope every stat to THIS student. Matching on name collides when two
+  // students share a name; user_id is the only safe key.
+  const myAll = useMemo(() => attempts.filter(a => a.user_id === userId), [attempts, userId]);
   const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
-  const myRank = board.findIndex(s => s.student === name);
-  const myAvg  = board.find(s => s.student === name)?.avg || 0;
-  const mine   = attempts.filter(a => a.student_name === name);
+  const myRank = board.findIndex(s => s.user_id === userId);
+  const myAvg  = board.find(s => s.user_id === userId)?.avg || 0;
+  const mine   = myAll;
   const trend  = mine.slice().sort((a,b)=>new Date(a.submitted_at)-new Date(b.submitted_at)).map(a=>({ name: dateStr(a.submitted_at), pct: a.percent }));
   const honors = myAvg >= 80 && mine.length > 0;
   const flags  = mine.reduce((s,a)=>s+a.violations,0);
@@ -1437,6 +1760,14 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
         </div>
       )}
 
+      {deepLinkMsg && (
+        <div className={`${card} border-amber-200 bg-amber-50 p-4 flex items-start gap-3`}>
+          <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-600"/>
+          <p className="flex-1 text-xs text-amber-800">{deepLinkMsg}</p>
+          <button onClick={onDismissDeepLink} className="shrink-0 text-amber-400 hover:text-amber-700"><XCircle size={15}/></button>
+        </div>
+      )}
+
       {/* ── My classrooms + join by code ─────────────────────────── */}
       <div className={`${card} p-5 space-y-4`}>
         <div className="flex items-center gap-2">
@@ -1489,13 +1820,17 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
           {!visibleQuizzes.length && <div className="sm:col-span-2"><Empty icon={ListChecks} title="No quizzes here yet" hint={classrooms.length ? "Your instructor hasn't published a quiz for this classroom yet." : "Join a classroom above to see its quizzes."}/></div>}
           {visibleQuizzes.map(qz => {
             const room = classrooms.find(c => c.id === qz.classroom_id);
-            const myAttempts = attempts.filter(a => a.quiz_id === qz.id).sort((a,b)=>b.attempt_number-a.attempt_number);
+            const myAttempts = myAll.filter(a => a.quiz_id === qz.id).sort((a,b)=>b.attempt_number-a.attempt_number);
             const best = myAttempts.reduce((b,a) => (!b || a.percent > b.percent) ? a : b, null);
             const attemptsUsed = myAttempts.length;
             const canRetake = attemptsUsed > 0 && attemptsUsed < qz.max_attempts;
-            const pool = questions.filter(b => qz.units.includes(b.unit)).length;
+            const isExact = Array.isArray(qz.question_ids) && qz.question_ids.length > 0;
+            const pool = isExact
+              ? questions.filter(b => qz.question_ids.includes(b.id)).length
+              : questions.filter(b => (qz.units||[]).includes(b.unit)).length;
+            const needed = isExact ? 1 : qz.draw_count;
             const avail = quizAvailability(qz);
-            const canStart = avail.available && pool >= qz.draw_count && (attemptsUsed === 0 || canRetake);
+            const canStart = avail.available && pool >= needed && (attemptsUsed === 0 || canRetake);
 
             return (
               <div key={qz.id} className={`${cardH} p-5`}>
@@ -1546,9 +1881,12 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
   );
 }
 
-function Rules({ quiz, questions, attempts, name, onStart, onBack }) {
-  const pool = questions.filter(b => quiz.units.includes(b.unit)).length;
-  const myAttempts = attempts.filter(a => a.quiz_id === quiz.id).length;
+function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
+  const isExact = Array.isArray(quiz.question_ids) && quiz.question_ids.length > 0;
+  const pool = isExact
+    ? questions.filter(b => quiz.question_ids.includes(b.id)).length
+    : questions.filter(b => (quiz.units||[]).includes(b.unit)).length;
+  const myAttempts = attempts.filter(a => a.quiz_id === quiz.id && a.user_id === userId).length;
   const isRetake = myAttempts > 0;
   return (
     <div className="mx-auto max-w-lg pt-6">
@@ -1621,6 +1959,9 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     return shuffle(pool).slice(0, quiz.draw_count).map(q => ({ q, order: shuffle([0,1,2,3]) }));
   });
   const [answers, setAnswers]       = useState(() => restored?.answers ?? drawn.map(() => null));
+  // "Mark for review" — standard in NTA/GRE/GMAT interfaces. Students
+  // park an uncertain question and come back rather than burning time.
+  const [flagged, setFlagged]       = useState(() => new Set(restored?.flagged ?? []));
   const [idx, setIdx]               = useState(0);
   const [remaining, setRemaining]   = useState(() => restored?.remaining ?? quiz.duration_sec);
   const [log, setLog]               = useState(() => restored?.log ?? []);
@@ -1640,9 +1981,9 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   useEffect(() => {
     if (submitted) return;
     try {
-      localStorage.setItem(dKey, JSON.stringify({ quizId: quiz.id, drawn, answers, remaining, log, savedAt: Date.now() }));
+      localStorage.setItem(dKey, JSON.stringify({ quizId: quiz.id, drawn, answers, flagged: [...flagged], remaining, log, savedAt: Date.now() }));
     } catch (_) {}
-  }, [answers, remaining, log, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [answers, flagged, remaining, log, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFlag = useCallback(label => {
     setLog(l => [...l, { t: Date.now(), label }]);
@@ -1857,9 +2198,17 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
         <div className="mt-5 grid gap-5 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <div className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6">
-              <div className="flex items-center justify-between text-xs text-slate-400">
+              <div className="flex items-center justify-between gap-3 text-xs text-slate-400">
                 <span>Question {idx+1} of {drawn.length}</span>
-                <Badge tone="violet">{cur.q.unit}</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge tone="violet">{cur.q.unit}</Badge>
+                  <button
+                    onClick={() => setFlagged(f => { const n = new Set(f); n.has(idx) ? n.delete(idx) : n.add(idx); return n; })}
+                    title={flagged.has(idx) ? "Remove review flag" : "Mark for review — come back to this before submitting"}
+                    className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${flagged.has(idx) ? "border-amber-400/40 bg-amber-400/20 text-amber-300" : "border-slate-600 text-slate-400 hover:border-slate-500 hover:text-slate-200"}`}>
+                    <Flag size={11}/> {flagged.has(idx) ? "Flagged" : "Review"}
+                  </button>
+                </div>
               </div>
               <p className="mt-4 text-lg font-semibold leading-snug text-white">{cur.q.question}</p>
               <div className="mt-5 space-y-2.5">
@@ -1883,15 +2232,28 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
                 : <button className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`} onClick={() => (answered<drawn.length)?setShowConfirm(true):finish()}><CheckCircle2 size={15}/> Submit quiz</button>}
             </div>
 
-            {showConfirm && (
-              <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
-                <p className="text-sm font-semibold text-amber-200">{drawn.length-answered} question{drawn.length-answered===1?"":"s"} unanswered. Submit anyway?</p>
-                <div className="mt-3 flex gap-2">
-                  <button className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`} onClick={finish}>Yes, submit</button>
-                  <button className={`${btn} border border-slate-700 bg-slate-800 text-slate-200`} onClick={() => setShowConfirm(false)}>Go back</button>
+            {showConfirm && (() => {
+              const unanswered  = drawn.length - answered;
+              const firstOpen   = drawn.findIndex((_, i) => answers[i] === null);
+              const firstFlag   = drawn.findIndex((_, i) => flagged.has(i));
+              return (
+                <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+                  <p className="text-sm font-semibold text-amber-200">
+                    {unanswered > 0
+                      ? `${unanswered} question${unanswered===1?"":"s"} still unanswered.`
+                      : "All questions answered."}
+                    {flagged.size > 0 && ` ${flagged.size} marked for review.`}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-200/70">Once submitted you cannot change your answers.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`} onClick={finish}>Yes, submit now</button>
+                    {firstOpen >= 0 && <button className={`${btn} border border-slate-700 bg-slate-800 text-slate-200`} onClick={() => { setIdx(firstOpen); setShowConfirm(false); }}>Go to unanswered</button>}
+                    {firstFlag >= 0 && <button className={`${btn} border border-amber-500/40 bg-amber-500/10 text-amber-200`} onClick={() => { setIdx(firstFlag); setShowConfirm(false); }}>Review flagged</button>}
+                    <button className={`${btn} border border-slate-700 bg-slate-800 text-slate-200`} onClick={() => setShowConfirm(false)}>Cancel</button>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           <div className="space-y-4">
@@ -1930,13 +2292,31 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
                 <span className={num}>{answered}/{drawn.length}</span>
               </div>
               <div className="grid grid-cols-5 gap-1.5">
-                {drawn.map((_, i) => (
-                  <button key={i} onClick={() => setIdx(i)}
-                    className={`grid h-9 place-items-center rounded-xl text-xs font-bold transition ${num} ${i===idx?"bg-violet-500 text-white shadow-lg shadow-violet-900/50":answers[i]!==null?"bg-emerald-500/30 text-emerald-300":"bg-slate-700 text-slate-400 hover:bg-slate-600"}`}>
-                    {i+1}
-                  </button>
-                ))}
+                {drawn.map((_, i) => {
+                  const isFlagged = flagged.has(i);
+                  return (
+                    <button key={i} onClick={() => setIdx(i)}
+                      className={`relative grid h-9 place-items-center rounded-xl text-xs font-bold transition ${num} ${i===idx?"bg-violet-500 text-white shadow-lg shadow-violet-900/50":answers[i]!==null?"bg-emerald-500/30 text-emerald-300":"bg-slate-700 text-slate-400 hover:bg-slate-600"}`}>
+                      {i+1}
+                      {isFlagged && <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-slate-800"/>}
+                    </button>
+                  );
+                })}
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-700 pt-3 text-[11px] text-slate-400">
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-400"/>Answered</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-400"/>For review ({flagged.size})</span>
+              </div>
+              {(() => {
+                const nextOpen = drawn.findIndex((_, i) => answers[i] === null);
+                const nextFlag = drawn.findIndex((_, i) => flagged.has(i));
+                return (nextOpen >= 0 || nextFlag >= 0) && (
+                  <div className="mt-2 flex gap-1.5">
+                    {nextOpen >= 0 && <button onClick={() => setIdx(nextOpen)} className="flex-1 rounded-lg bg-slate-700 px-2 py-1.5 text-[11px] font-semibold text-slate-300 transition hover:bg-slate-600">Next unanswered</button>}
+                    {nextFlag >= 0 && <button onClick={() => setIdx(nextFlag)} className="flex-1 rounded-lg bg-amber-500/20 px-2 py-1.5 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-500/30">Next flagged</button>}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
