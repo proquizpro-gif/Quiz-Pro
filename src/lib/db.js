@@ -1,5 +1,47 @@
 import { supabase } from "./supabase";
 
+/* ──────────────────────────────────────────────────────────────────
+   Column-tolerant writes.
+
+   Optional columns are added by later migrations. If a deployment is
+   running ahead of its database, a raw insert fails outright — and for
+   an exam submission that means a student loses a completed paper
+   because of a missing metadata column. Unacceptable.
+
+   retryStrip drops one unknown optional column at a time and retries,
+   so the core record always lands. Dropped names are attached as a
+   non-enumerable __droppedColumns so the UI can warn the operator
+   without polluting the row.
+   ────────────────────────────────────────────────────────────────── */
+async function retryStrip(table, op, payload, optionalCols) {
+  let p = { ...payload };
+  const stripped = [];
+  for (let i = 0; i <= optionalCols.length; i++) {
+    const { data, error } = await op(p);
+    if (!error) {
+      if (stripped.length) {
+        console.warn(`[${table}] database is missing: ${stripped.join(", ")}. Record saved without them. Run the latest SQL migration.`);
+        if (data && typeof data === "object") {
+          try { Object.defineProperty(data, "__droppedColumns", { value: stripped, enumerable: false }); } catch (_) {}
+        }
+      }
+      return data;
+    }
+    const msg = (error.message || "").toLowerCase();
+    const next = optionalCols.find(c => c in p && msg.includes(c.toLowerCase()));
+    if (!next) throw error;                       // a real error, not a schema gap
+    const { [next]: _drop, ...rest } = p;
+    p = rest;
+    stripped.push(next);
+  }
+  throw new Error(`${table}: could not reconcile schema`);
+}
+
+const ATTEMPT_OPTIONAL  = ["student_course", "student_semester", "student_cu_id", "student_phone", "meta"];
+const QUIZ_OPTIONAL     = ["question_ids", "show_answers_policy", "subject"];
+const QUESTION_OPTIONAL = ["subject", "difficulty", "topic", "points"];
+
+
 /* ── Questions ─────────────────────────────────────────────────── */
 export async function fetchQuestions() {
   const { data, error } = await supabase.from("questions").select("*").order("unit", { ascending: true });
@@ -12,9 +54,22 @@ export async function insertQuestion(q) {
   return data;
 }
 export async function insertQuestions(qs) {
-  const { data, error } = await supabase.from("questions").insert(qs).select();
-  if (error) throw error;
-  return data;
+  // Array payload: strip the same key from every row together.
+  let rows = qs.map(q => ({ ...q }));
+  const stripped = [];
+  for (let i = 0; i <= QUESTION_OPTIONAL.length; i++) {
+    const { data, error } = await supabase.from("questions").insert(rows).select();
+    if (!error) {
+      if (stripped.length) console.warn(`[questions] database is missing: ${stripped.join(", ")}. Rows saved without them.`);
+      return data;
+    }
+    const msg = (error.message || "").toLowerCase();
+    const next = QUESTION_OPTIONAL.find(c => c in (rows[0] || {}) && msg.includes(c.toLowerCase()));
+    if (!next) throw error;
+    rows = rows.map(({ [next]: _d, ...rest }) => rest);
+    stripped.push(next);
+  }
+  throw new Error("questions: could not reconcile schema");
 }
 export async function updateQuestion(id, patch) {
   const { data, error } = await supabase.from("questions").update(patch).eq("id", id).select().single();
@@ -33,9 +88,9 @@ export async function fetchQuizzes() {
   return data;
 }
 export async function insertQuiz(quiz) {
-  const { data, error } = await supabase.from("quizzes").insert(quiz).select().single();
-  if (error) throw error;
-  return data;
+  return retryStrip("quizzes",
+    p => supabase.from("quizzes").insert(p).select().single(),
+    quiz, QUIZ_OPTIONAL);
 }
 export async function updateQuiz(id, patch) {
   const { data, error } = await supabase.from("quizzes").update(patch).eq("id", id).select().single();
@@ -59,9 +114,9 @@ export async function fetchMyAttempts(userId) {
   return data;
 }
 export async function insertAttempt(attempt) {
-  const { data, error } = await supabase.from("attempts").insert(attempt).select().single();
-  if (error) throw error;
-  return data;
+  return retryStrip("attempts",
+    p => supabase.from("attempts").insert(p).select().single(),
+    attempt, ATTEMPT_OPTIONAL);
 }
 export async function deleteAttempt(id) {
   const { error } = await supabase.from("attempts").delete().eq("id", id);

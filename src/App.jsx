@@ -664,7 +664,7 @@ function QuizManager({ questions, quizzes, setQuizzes, attempts, classrooms, onO
               )}
               {at.length > 0 && <div className="mt-3"><ScoreBar value={avg}/></div>}
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-1">{qz.units.map(u=><Badge key={u} tone="slate">{u}</Badge>)}</div>
+                <div className="flex flex-wrap gap-1">{(qz.units||[]).map(u=><Badge key={u} tone="slate">{u}</Badge>)}</div>
                 {(() => {
                   const closeInPast = qz.close_at && new Date(qz.close_at).getTime() < Date.now();
                   const showReopen  = !qz.is_open || closeInPast;
@@ -739,6 +739,7 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
   const [openAt,      setOpenAt]      = useState(quiz.open_at  ? new Date(quiz.open_at).toISOString().slice(0,16)  : "");
   const [closeAt,     setCloseAt]     = useState(quiz.close_at ? new Date(quiz.close_at).toISOString().slice(0,16) : "");
   const [isOpen,      setIsOpen]      = useState(quiz.is_open !== false);
+  const [policy,      setPolicy]      = useState(quiz.show_answers_policy || "after_close");
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState(null);
   const ready = title.trim();
@@ -754,6 +755,7 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
         open_at:  openAt  ? new Date(openAt).toISOString()  : null,
         close_at: closeAt ? new Date(closeAt).toISOString() : null,
         is_open: isOpen,
+        show_answers_policy: policy,
       };
       const updated = await updateQuiz(quiz.id, patch);
       logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "quiz.edit", target: quiz.title, meta: { fields: Object.keys(patch) } });
@@ -792,6 +794,14 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
           <div><label className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Opens at</label><input type="datetime-local" className={inp} value={openAt} onChange={e => setOpenAt(e.target.value)}/></div>
           <div><label className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Closes at</label><input type="datetime-local" className={inp} value={closeAt} onChange={e => setCloseAt(e.target.value)}/></div>
         </div>
+        <div className="rounded-xl border-2 border-slate-200 bg-slate-50/60 p-3">
+          <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700"><ShieldCheck size={13} className="text-emerald-600"/> Answer visibility</label>
+          <select className={inp} value={policy} onChange={e=>setPolicy(e.target.value)}>
+            <option value="after_close">After the quiz closes — recommended</option>
+            <option value="immediate">Immediately after submission</option>
+            <option value="never">Never — score only</option>
+          </select>
+        </div>
         <div><label className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500"><School size={12}/> Classroom</label>
           <select className={inp} value={classroomId} onChange={e => setClassroomId(e.target.value)}>
             {myRooms.map(c => <option key={c.id} value={c.id}>{c.name}{c.section ? ` · ${c.section}` : ""}{c.year ? ` (${c.year})` : ""}</option>)}
@@ -817,6 +827,7 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
   const [openAt, setOpenAt]     = useState("");
   const [closeAt, setCloseAt]   = useState("");
   const [classroomId, setClassroomId] = useState(myRooms[0]?.id ?? "");
+  const [policy, setPolicy]     = useState("after_close");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [pSort, setPSort] = useState("newest");
   const [pQuery, setPQuery] = useState("");
@@ -904,6 +915,7 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
         open_at: openAt ? new Date(openAt).toISOString() : null,
         close_at: closeAt ? new Date(closeAt).toISOString() : null,
         classroom_id: classroomId || null,
+        show_answers_policy: policy,
         created_by: user.id,
       });
       setQuizzes(prev => [...prev, qz]);
@@ -936,6 +948,22 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <div><label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Opens at</label><input type="datetime-local" className={inp} value={openAt} onChange={e=>setOpenAt(e.target.value)}/><p className="mt-1 text-[11px] text-slate-400">Leave blank to open immediately.</p></div>
         <div><label className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500"><CalendarClock size={12}/> Closes at</label><input type="datetime-local" className={inp} value={closeAt} onChange={e=>setCloseAt(e.target.value)}/><p className="mt-1 text-[11px] text-slate-400">Leave blank for no deadline.</p></div>
+      </div>
+
+      <div className="mt-4 rounded-xl border-2 border-slate-200 bg-slate-50/60 p-4">
+        <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700"><ShieldCheck size={13} className="text-emerald-600"/> When can students see correct answers?</label>
+        <select className={inp} value={policy} onChange={e=>setPolicy(e.target.value)}>
+          <option value="after_close">After the quiz closes — recommended</option>
+          <option value="immediate">Immediately after they submit</option>
+          <option value="never">Never — show score only</option>
+        </select>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+          {policy === "immediate"
+            ? "Only safe when retakes are off. With retakes allowed a student can submit blank, read the key, and retake for full marks."
+            : policy === "never"
+              ? "Students see their score and nothing else. Use for questions you intend to reuse."
+              : "Answers stay hidden until the close time, so students who finish early cannot pass the key to those still sitting."}
+        </p>
       </div>
 
       {/* Question picker — cascade filters */}
@@ -1962,6 +1990,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   // "Mark for review" — standard in NTA/GRE/GMAT interfaces. Students
   // park an uncertain question and come back rather than burning time.
   const [flagged, setFlagged]       = useState(() => new Set(restored?.flagged ?? []));
+  const [online, setOnline]         = useState(() => navigator.onLine !== false);
   const [idx, setIdx]               = useState(0);
   const [remaining, setRemaining]   = useState(() => restored?.remaining ?? quiz.duration_sec);
   const [log, setLog]               = useState(() => restored?.log ?? []);
@@ -1984,6 +2013,15 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
       localStorage.setItem(dKey, JSON.stringify({ quizId: quiz.id, drawn, answers, flagged: [...flagged], remaining, log, savedAt: Date.now() }));
     } catch (_) {}
   }, [answers, flagged, remaining, log, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Network state — shown in the integrity panel so a student can see
+  // at a glance that a dropped connection has not eaten their answers.
+  useEffect(() => {
+    const up = () => setOnline(true), down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, []);
 
   const addFlag = useCallback(label => {
     setLog(l => [...l, { t: Date.now(), label }]);
@@ -2260,14 +2298,21 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
             <div className="rounded-2xl border border-slate-700 bg-slate-800/60 p-5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Integrity monitor</span>
-                <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
-                  <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"/></span> Live
-                </span>
+                {online
+                  ? <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+                      <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"/></span> Live
+                    </span>
+                  : <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-400"><WifiOff size={12}/> Offline</span>}
               </div>
               <div className="mt-4 flex items-baseline gap-2">
                 <span className={`text-4xl font-extrabold ${num} ${log.length===0?"text-emerald-400":"text-amber-400"}`}>{log.length}</span>
                 <span className="text-xs text-slate-400">flag{log.length===1?"":"s"}</span>
               </div>
+              {!online && (
+                <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+                  No internet connection. Keep answering — every answer is saved on this device and will be submitted once you reconnect.
+                </p>
+              )}
               {fsBlocked && <p className="mt-3 rounded-lg bg-slate-900/60 px-3 py-2 text-[11px] leading-relaxed text-slate-400">Fullscreen blocked in this preview. Window monitoring still active.</p>}
               {violationCount >= 3 && violationCount < 5 && (
                 <div className="mt-3 rounded-lg bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-[11px] font-semibold text-rose-300">
@@ -2327,6 +2372,20 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
 
 /* ── Result ───────────────────────────────────────────────────────── */
 function Result({ quizzes, attempt, attempts, name, onHome }) {
+  /* Answer-key exposure control.
+
+     Showing the key the instant a paper is submitted creates an
+     obvious exploit wherever retakes are allowed: submit blank, read
+     every correct answer, retake for full marks. The quiz carries a
+     policy — default "after_close" — and the review section honours
+     it. "immediate" is only safe on single-attempt formative quizzes. */
+  const srcQuiz     = quizzes?.find(q => q.id === attempt.quiz_id) || null;
+  const policy      = srcQuiz?.show_answers_policy || "after_close";
+  const windowShut  = srcQuiz
+    ? (srcQuiz.is_open === false) ||
+      (srcQuiz.close_at ? new Date(srcQuiz.close_at).getTime() < Date.now() : false)
+    : false;
+  const showAnswers = policy === "immediate" || (policy === "after_close" && windowShut);
   const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
   const rank   = board.findIndex(s => s.student === name);
   const honors = attempt.percent >= 80;
@@ -2354,7 +2413,22 @@ function Result({ quizzes, attempt, attempts, name, onHome }) {
         </div>
       </div>
 
-      {attempt.items?.length > 0 && (
+      {attempt.items?.length > 0 && !showAnswers && (
+        <div className={`${card} p-5 text-center`}>
+          <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-slate-100"><ShieldCheck size={19} className="text-slate-500"/></div>
+          <h4 className="text-sm font-bold text-slate-900">Answer review is not open yet</h4>
+          <p className="mx-auto mt-1.5 max-w-sm text-xs leading-relaxed text-slate-500">
+            {policy === "never"
+              ? "Your instructor has set this quiz to show scores only. Correct answers will not be published."
+              : srcQuiz?.close_at
+                ? `Correct answers unlock when the quiz closes on ${dateTimeStr(srcQuiz.close_at)}, so that everyone sits the same paper.`
+                : "Correct answers unlock once your instructor closes this quiz for the whole class."}
+          </p>
+          <p className="mt-3 text-[11px] text-slate-400">Your score above is final and already recorded.</p>
+        </div>
+      )}
+
+      {attempt.items?.length > 0 && showAnswers && (
         <div className={`${card} p-5`}>
           <h4 className="mb-4 text-sm font-bold text-slate-900">Answer review</h4>
           <div className="space-y-3">
