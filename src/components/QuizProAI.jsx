@@ -2,9 +2,9 @@ import { useState, useMemo } from "react";
 import { Sparkles, Wand2, Loader, Plus, Trash2, Edit3, RefreshCw, Send, CheckCircle2, AlertCircle, Clock, GraduationCap, BookOpen, Target, ListChecks, Save, Eye, X, RotateCcw, ShieldCheck, Shuffle, Award } from "lucide-react";
 import { card, cardH, btn, btnP, btnG, inp, num, Badge, Empty, Toast, Spinner } from "./ui.jsx";
 import { insertQuiz, insertQuestions } from "../lib/db";
+import { askAI, extractJSON, hasAI, PROVIDER_LABEL } from "../lib/ai";
 
-const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY || "";
-const AI_MODEL = "claude-haiku-4-5-20251001";
+
 
 const DRAFT_SYSTEM = `You are an academic assessment design assistant generating multiple-choice questions for a university-level course.
 Rules:
@@ -14,31 +14,14 @@ Rules:
 4. No "All of the above" / "None of the above" unless explicitly instructed.
 5. Tag each question with actual Bloom's level.
 6. Every question needs a 1-2 sentence explanation.
-Return ONLY a JSON array of objects with this schema:
-{"question_text":"string","options":["A","B","C","D"],"correct":0,"explanation":"string","difficulty":"easy|medium|hard","bloom_level":"remember|understand|apply|analyze","topic_tag":"string"}`;
+Return ONLY a JSON object of the form {"questions":[ ... ]} where each entry is:
+{"question_text":"string","options":["A","B","C","D"],"correct":0,"explanation":"string","difficulty":"easy|medium|hard","bloom_level":"remember|understand|apply|analyze","topic_tag":"string"}
+"correct" is the 0-based index of the right option.`;
 
-const CRITIC_SYSTEM = `You are a strict quality-critic for MCQ items. Score each against: correctness (one clear answer), distractor quality (plausible, same-category), stem clarity, cognitive demand, bias-free. Score 0-10. Return ONLY JSON array: [{"score":0-10,"flags":["reason"],"verdict":"keep|revise|reject"}]`;
+const CRITIC_SYSTEM = `You are a strict quality-critic for MCQ items. Score each against: correctness (one clear answer), distractor quality (plausible, same-category), stem clarity, cognitive demand, bias-free. Score 0-10. Return ONLY a JSON object of the form {"reviews":[{"score":0-10,"flags":["reason"],"verdict":"keep|revise|reject"}]} with one entry per item, in the same order.`;
 
-async function callClaude(system, user, maxTokens=6000) {
-  if (!ANTHROPIC_KEY) throw new Error("AI not configured. Add VITE_ANTHROPIC_KEY.");
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", "x-api-key":ANTHROPIC_KEY, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
-    body:JSON.stringify({ model:AI_MODEL, max_tokens:maxTokens, system, messages:[{ role:"user", content:user }] }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.content?.[0]?.text||"";
-}
-
-function extractJSON(text) {
-  let c = text.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"");
-  const fi = c.search(/[\[{]/);
-  if (fi===-1) throw new Error("No JSON found");
-  c = c.slice(fi);
-  c = c.slice(0, Math.max(c.lastIndexOf("]"),c.lastIndexOf("}"))+1);
-  return JSON.parse(c);
-}
+const callClaude = (system, user, maxTokens = 6000) =>
+  askAI(system, user, { maxTokens, json: true });
 
 async function generatePipeline(config, onProgress) {
   const { subject, unit, count, difficulty, difficultySplit, bloomTarget, extraInstructions } = config;
@@ -50,7 +33,7 @@ async function generatePipeline(config, onProgress) {
 - Difficulty: ${difficulty==="mixed"?`${difficultySplit.easy}% easy, ${difficultySplit.medium}% medium, ${difficultySplit.hard}% hard`:`all ${difficulty}`}
 - Bloom's target: ${bloomTarget}
 ${extraInstructions?`- Extra: ${extraInstructions}`:""}
-Return exactly ${surplus} questions as a JSON array.`;
+Return exactly ${surplus} questions inside {"questions":[...]}.`;
   const draftText = await callClaude(DRAFT_SYSTEM, draftPrompt, 8000);
   let drafts;
   try { drafts = extractJSON(draftText); } catch { throw new Error("AI returned malformed JSON. Please try again."); }
@@ -105,7 +88,7 @@ export default function QuizProAI({ classrooms, onQuizPublished }) {
   const [moreCount,setMoreCount]= useState(5);
   const [preview,  setPreview]  = useState(false);
 
-  const canGenerate = ANTHROPIC_KEY && config.subject.trim() && config.unit.trim() && config.count>0;
+  const canGenerate = hasAI && config.subject.trim() && config.unit.trim() && config.count>0;
   const canPublish  = questions.length>0 && config.classroomId && config.openAt && config.closeAt;
   const set = (k,v) => setConfig(c=>({ ...c, [k]:v }));
 
@@ -121,7 +104,7 @@ export default function QuizProAI({ classrooms, onQuizPublished }) {
       const prompt = `Rewrite this MCQ. Instruction: ${regenInst||"Improve it."}
 Original: ${JSON.stringify(questions[idx])}
 Subject: ${config.subject}, Unit: ${config.unit}
-Return a single JSON question object.`;
+Return {"questions":[ <one question object> ]}.`;
       const text = await callClaude(DRAFT_SYSTEM, prompt, 1500);
       const res  = extractJSON(text);
       const q    = Array.isArray(res)?res[0]:res;
@@ -190,7 +173,7 @@ Return a single JSON question object.`;
         );})}
       </div>
 
-      {!ANTHROPIC_KEY&&<div className={`${card} border-amber-200 bg-amber-50 p-4 flex items-start gap-3`}><AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5"/><div><p className="font-semibold text-amber-900 text-sm">AI not configured</p><p className="text-xs text-amber-700 mt-1">Add <code className="bg-amber-100 px-1 rounded">VITE_ANTHROPIC_KEY</code> in Netlify environment variables. It will auto-deploy from GitHub.</p></div></div>}
+      {!hasAI&&<div className={`${card} border-amber-200 bg-amber-50 p-4 flex items-start gap-3`}><AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5"/><div><p className="font-semibold text-amber-900 text-sm">AI not configured</p><p className="text-xs text-amber-700 mt-1">Add a free Groq key as <code className="bg-amber-100 px-1 rounded">VITE_GROQ_KEY</code> in Netlify environment variables, then redeploy. Get one at console.groq.com — no card required.</p></div></div>}
       {error&&<div className={`${card} border-rose-200 bg-rose-50 p-4 flex items-start gap-3`}><AlertCircle size={18} className="text-rose-600 shrink-0 mt-0.5"/><div className="flex-1"><p className="text-xs text-rose-700">{error}</p></div><button onClick={()=>setError(null)} className="text-rose-400 hover:text-rose-600"><X size={16}/></button></div>}
 
       {stage==="configure"&&(
