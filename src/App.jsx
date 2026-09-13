@@ -9,6 +9,7 @@ import {
   Target, Copy, Printer, Flag, Wifi, WifiOff,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
+import { configMissing } from "./lib/supabase";
 import {
   fetchQuestions, insertQuestion, insertQuestions, deleteQuestion,
   fetchQuizzes, insertQuiz, updateQuiz, deleteQuiz,
