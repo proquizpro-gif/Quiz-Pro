@@ -6,7 +6,7 @@ import {
   LogOut, AlertCircle, RotateCcw,
   PlayCircle, PauseCircle, CalendarClock, FileDown, ShieldAlert,
   School, LogIn, Edit3, Save, GraduationCap,
-  Target, Copy, Printer, Flag, Wifi, WifiOff,
+  Target, Copy, Printer, Flag, Wifi, WifiOff, Brain,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { configMissing } from "./lib/supabase";
@@ -230,6 +230,7 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
     { id:"classrooms", label:"Classrooms",     icon:School },
     { id:"bank",       label:"Question Bank",  icon:BookOpen },
     { id:"quizzes",    label:"Quizzes",        icon:ListChecks },
+    { id:"qaapf",     label:"QAAPF",           icon:Brain },
   ];
   return (
     <div className="space-y-6">
@@ -244,6 +245,7 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
       {tab==="overview"   && <FacultyOverview questions={questions} quizzes={quizzes} attempts={attempts}/>}
       {tab==="classrooms" && <ClassroomManager classrooms={classrooms} setClassrooms={setClassrooms}/>}
       {tab==="bank"       && <QuestionBank questions={questions} setQuestions={setQuestions}/>}
+      {tab==="qaapf"     && <QAAPFPanel attempts={attempts} questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} setQuestions={setQuestions} classrooms={classrooms}/>}
       {tab==="quizzes"    && (openQuiz
         ? <QuizDetail quizzes={quizzes} quiz={openQuiz} questions={questions} attempts={attempts} classrooms={classrooms} profiles={null} onBack={() => setOpenQuiz(null)}/>
         : <QuizManager questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} attempts={attempts} classrooms={classrooms} onOpen={setOpenQuiz}/>)}
@@ -451,7 +453,7 @@ function QuestionBank({ questions, setQuestions }) {
         <button className={btnG} onClick={() => setAdding(v=>!v)}><Plus size={15}/> {adding?"Cancel":"Add question"}</button>
       </div>
 
-      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} units={units} onDone={() => setAdding(false)} onSuccess={msg => toast2(msg)}/>}
+      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} subjects={subjects} units={units} onDone={() => setAdding(false)} onSuccess={msg => toast2(msg)}/>}
 
       <div className="space-y-4">
         {!filtered.length
@@ -544,20 +546,23 @@ function ImportPreview({ preview, onCancel, onCommit }) {
   );
 }
 
-function AddQuestion({ questions, setQuestions, units, onDone, onSuccess }) {
+function AddQuestion({ questions, setQuestions, units, subjects, onDone, onSuccess }) {
   const { user, profile } = useAuth();
   const [question, setQuestion] = useState("");
   const [opts, setOpts]         = useState(["","","",""]);
   const [correct, setCorrect]   = useState(0);
+  const [subject, setSubject]   = useState(subjects[0] || "");
   const [unit, setUnit]         = useState(units[0] || "");
   const [topic, setTopic]       = useState("");
+  const [difficulty, setDiff]   = useState("medium");
+  const [points, setPoints]     = useState(1);
   const [saving, setSaving]     = useState(false);
   const ready = question.trim() && opts.every(o=>o.trim()) && unit.trim();
 
   const save = async () => {
     setSaving(true);
     try {
-      const q = await insertQuestion({ question: question.trim(), options: opts.map(o=>o.trim()), correct, unit: unit.trim(), topic: topic.trim()||"General", points: 1 });
+      const q = await insertQuestion({ question: question.trim(), options: opts.map(o=>o.trim()), correct, subject: subject.trim(), unit: unit.trim(), topic: topic.trim()||"General", difficulty, points: Number(points)||1 });
       setQuestions(prev => [...prev, q]);
       onSuccess?.("Question added.");
       logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "question.create", target: question.trim().slice(0, 60), meta: {} });
@@ -578,12 +583,14 @@ function AddQuestion({ questions, setQuestions, units, onDone, onSuccess }) {
           </div>
         ))}
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <div><input className={inp} list="udl" placeholder="Unit" value={unit} onChange={e=>setUnit(e.target.value)}/><datalist id="udl">{units.map(u=><option key={u} value={u}/>)}</datalist></div>
-        <input className={inp} placeholder="Topic (optional)" value={topic} onChange={e=>setTopic(e.target.value)}/>
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Subject *</label><input className={inp} list="sdl" value={subject} onChange={e=>setSubject(e.target.value)} placeholder="e.g. Aptitude"/><datalist id="sdl">{subjects.map(s=><option key={s} value={s}/>)}</datalist></div>
+        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Unit *</label><input className={inp} list="udl" value={unit} onChange={e=>setUnit(e.target.value)} placeholder="e.g. Arithmetic"/><datalist id="udl">{units.map(u=><option key={u} value={u}/>)}</datalist></div>
+        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Topic</label><input className={inp} value={topic} onChange={e=>setTopic(e.target.value)} placeholder="Optional"/></div>
+        <div><label className="mb-1 block text-xs font-semibold text-slate-500">Difficulty</label><select className={inp} value={difficulty} onChange={e=>setDiff(e.target.value)}><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select></div>
       </div>
       <div className="mt-3 flex items-center gap-2">
-        <button className={btnP} disabled={!ready||saving} onClick={save}>{saving?"Saving...":"Add to bank"}</button>
+        <button className={btnP} disabled={!ready||saving} onClick={save}>{saving?"Saving…":"Add to bank"}</button>
         <button className={btnG} onClick={onDone}>Cancel</button>
         <span className="text-xs text-slate-400">Click a letter to set the correct answer</span>
       </div>
@@ -1831,6 +1838,37 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
           </div>
         </div>
       )}
+
+      {/* QAAPF mini-profile for student */}
+      {myAll.length > 0 && (() => {
+        const profile = computeQAAPFProfile(myAll, questions);
+        if (profile.overallPct === null) return null;
+        const lvl = profile.overallLevel;
+        return (
+          <div className={`${card} p-5`}>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div><h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><Brain size={15} className="text-violet-600"/> Your aptitude profile</h3><p className="text-xs text-slate-400 mt-0.5">QAAPF — Quantitative & Analytical Aptitude Proficiency Framework</p></div>
+              {lvl && <div className={`rounded-xl border px-4 py-2 text-center ${lvl.light}`}><div className="text-lg font-extrabold">{lvl.level}</div><div className="text-xs font-semibold">{lvl.label}</div></div>}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-4">
+              {profile.domainProfiles.filter(d=>d.pct!==null).map(d=>(
+                <div key={d.id} className="rounded-xl bg-slate-50 border border-slate-100 p-2.5">
+                  <div className="text-xs font-semibold text-slate-600 flex items-center gap-1">{d.icon} {d.short}</div>
+                  <div className={`text-lg font-extrabold ${d.pct>=70?"text-emerald-600":d.pct>=50?"text-amber-600":"text-rose-600"}`}>{d.pct}%</div>
+                  <div className={`text-[10px] font-semibold ${d.level?.light.split(" ").slice(2).join(" ")}`}>{d.level?.level}</div>
+                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200"><div className={`h-full rounded-full ${d.pct>=70?"bg-emerald-500":d.pct>=50?"bg-amber-400":"bg-rose-500"}`} style={{width:`${d.pct}%`}}/></div>
+                </div>
+              ))}
+            </div>
+            {profile.gaps.length > 0 && (
+              <div className="mt-3 rounded-xl bg-rose-50 border border-rose-100 p-3">
+                <p className="text-xs font-bold text-rose-700 mb-1">Focus areas for improvement:</p>
+                <p className="text-[11px] text-rose-600">{profile.gaps.map(d=>`${d.icon} ${d.name}`).join(" · ")}</p>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {deepLinkMsg && (
         <div className={`${card} border-amber-200 bg-amber-50 p-4 flex items-start gap-3`}>
