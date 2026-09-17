@@ -6,7 +6,7 @@ import {
   LogOut, AlertCircle, RotateCcw,
   PlayCircle, PauseCircle, CalendarClock, FileDown, ShieldAlert,
   School, LogIn, Edit3, Save, GraduationCap,
-  Target, Copy, Printer, Flag, Wifi, WifiOff, Brain,
+  Target, Copy, Printer, Flag, Wifi, WifiOff, Brain, Radio,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { configMissing } from "./lib/supabase";
@@ -245,7 +245,7 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
           </button>
         ))}
       </div>
-      {tab==="overview"   && <FacultyOverview questions={questions} quizzes={quizzes} attempts={attempts}/>}
+      {tab==="overview"   && <FacultyOverview questions={questions} quizzes={quizzes} attempts={attempts} classrooms={classrooms} onOpenQuiz={(q)=>{ setOpenQuiz(q); setTab("quizzes"); }} onGoto={setTab}/>}
       {tab==="classrooms" && <ClassroomManager classrooms={classrooms} setClassrooms={setClassrooms}/>}
       {tab==="bank"       && <QuestionBank questions={questions} setQuestions={setQuestions}/>}
       {tab==="qaapf"     && <QAAPFPanel attempts={attempts} questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} setQuestions={setQuestions} classrooms={classrooms}/>}
@@ -257,73 +257,166 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
 }
 
 /* ── Faculty Overview ─────────────────────────────────────────────── */
-function FacultyOverview({ questions, quizzes, attempts }) {
-  const board    = useMemo(() => buildLeaderboard(attempts), [attempts]);
-  const avgAll   = attempts.length ? Math.round(attempts.reduce((s,a) => s+a.percent, 0) / attempts.length) : 0;
-  const passRate = attempts.length ? Math.round(attempts.filter(a=>a.percent>=60).length/attempts.length*100) : 0;
-  const weekChart = quizzes.map(q => {
-    const at = attempts.filter(a => a.quiz_id === q.id);
-    return { name:`Wk ${q.week}`, avg: at.length ? Math.round(at.reduce((s,a)=>s+a.percent,0)/at.length) : 0 };
-  });
-  const atRisk = board.filter(s => s.avg < 50);
+function FacultyOverview({ questions, quizzes, attempts, classrooms, onOpenQuiz, onGoto }) {
+  const board = useMemo(() => buildLeaderboard(attempts), [attempts]);
 
-  const exportClassCSV = () => {
-    downloadCSV(`class-summary-${dateStr(Date.now())}.csv`, board, [
-      { label: "Student", key: "student" },
-      { label: "Average %", key: "avg" },
-      { label: "Best %", key: "best" },
-      { label: "Quizzes Taken", key: "n" },
-      { label: "Total Flags", key: "violations" },
-    ]);
-  };
+  /* Per-quiz rollups, most recent first. This is what a teacher opens
+     the dashboard to see: which quiz just ran, how it went, and whether
+     anything needs attention — not a global lifetime average that blends
+     every cohort and every week into one meaningless number. */
+  const quizRows = useMemo(() => {
+    return quizzes.map(q => {
+      const at   = attempts.filter(a => a.quiz_id === q.id);
+      const uniq = new Map();               // best attempt per student
+      for (const a of at) {
+        const p = uniq.get(a.user_id);
+        if (!p || (a.percent ?? 0) > (p.percent ?? 0)) uniq.set(a.user_id, a);
+      }
+      const best = [...uniq.values()];
+      const avg  = best.length ? Math.round(best.reduce((s,a)=>s+a.percent,0)/best.length) : null;
+      const flaggedStudents = best.filter(a => (a.violations||0) >= 3).length;
+      const room = classrooms?.find(c => c.id === q.classroom_id);
+      const openState = quizAvailability(q);
+      return {
+        quiz: q, room, students: best.length, avg,
+        pass: best.length ? Math.round(best.filter(a=>a.percent>=60).length/best.length*100) : null,
+        flaggedStudents,
+        lastAt: at.length ? Math.max(...at.map(a => new Date(a.submitted_at).getTime())) : 0,
+        open: openState.available, openLabel: openState.label,
+      };
+    }).sort((a,b) => b.lastAt - a.lastAt || (b.quiz.week||0)-(a.quiz.week||0));
+  }, [quizzes, attempts, classrooms]);
+
+  const liveQuizzes = quizRows.filter(r => r.open);
+
+  /* Answer-key health. A question whose bank entry looks like an import
+     artefact — every stored answer defaulting to option A — is the most
+     likely cause of a student disputing a mark, so surface a count and
+     a way straight to the fix rather than making the teacher hunt. */
+  const suspectKeys = useMemo(() => {
+    // Heuristic only flags a *pattern*, never a single legitimately-A
+    // question: a unit where an implausible share of answers are index 0.
+    const byUnit = {};
+    for (const q of questions) {
+      const u = q.unit || "—";
+      byUnit[u] = byUnit[u] || { total:0, a:0 };
+      byUnit[u].total++; if (q.correct === 0) byUnit[u].a++;
+    }
+    let count = 0;
+    for (const u in byUnit) {
+      const { total, a } = byUnit[u];
+      if (total >= 5 && a / total >= 0.8) count += a;   // 80%+ all-A in a unit of 5+
+    }
+    return count;
+  }, [questions]);
+
+  const atRisk = board.filter(s => s.avg < 50);
+  const needsMarkingReview = quizRows.filter(r => r.avg !== null && r.avg < 25 && r.students >= 3);
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat icon={BookOpen}    label="Questions"  value={questions.length} tone="violet"/>
-        <Stat icon={ListChecks}  label="Quizzes"    value={quizzes.length}   tone="slate"/>
-        <Stat icon={Users}       label="Attempts"   value={attempts.length}  tone="sky"/>
-        <Stat icon={Award}       label="Class avg"  value={`${avgAll}%`}     sub={`${passRate}% pass rate`} tone="emerald"/>
+    <div className="space-y-5">
+      {/* Action items — the first thing a teacher should see, and only
+          when there is genuinely something to act on. */}
+      {(suspectKeys > 0 || needsMarkingReview.length > 0) && (
+        <div className="space-y-2">
+          {suspectKeys > 0 && (
+            <button onClick={() => onGoto?.("bank")} className="flex w-full items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:bg-amber-100/70">
+              <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600"/>
+              <div className="flex-1">
+                <p className="text-sm font-bold text-amber-900">{suspectKeys} question{suspectKeys===1?"":"s"} may have the wrong answer key</p>
+                <p className="mt-0.5 text-xs text-amber-700">Several units have almost every answer set to option A — the signature of an import that lost its answer key. This is the usual cause of disputed marks. Open the Question Bank to review and one-click fix.</p>
+              </div>
+              <ChevronLeft size={16} className="mt-1 shrink-0 rotate-180 text-amber-400"/>
+            </button>
+          )}
+          {needsMarkingReview.map(r => (
+            <button key={r.quiz.id} onClick={() => onOpenQuiz?.(r.quiz)} className="flex w-full items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-left transition hover:bg-rose-100/70">
+              <ShieldAlert size={18} className="mt-0.5 shrink-0 text-rose-600"/>
+              <div className="flex-1">
+                <p className="text-sm font-bold text-rose-900">"{r.quiz.title}" is averaging {r.avg}% across {r.students} students</p>
+                <p className="mt-0.5 text-xs text-rose-700">An average this low across a whole group usually means a scoring-key problem, not a weak cohort. Open the quiz and check the question analysis before releasing marks.</p>
+              </div>
+              <ChevronLeft size={16} className="mt-1 shrink-0 rotate-180 text-rose-400"/>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Compact stat strip */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat icon={Radio}      label="Live now"   value={liveQuizzes.length} sub={liveQuizzes.length?"quizzes open":"none open"} tone={liveQuizzes.length?"emerald":"slate"}/>
+        <Stat icon={Users}      label="Students"   value={board.length} sub="have attempted" tone="sky"/>
+        <Stat icon={ListChecks} label="Quizzes"    value={quizzes.length} sub={`${questions.length} questions`} tone="violet"/>
+        <Stat icon={Award}      label="Class avg"  value={board.length?`${Math.round(board.reduce((s,x)=>s+x.avg,0)/board.length)}%`:"—"} sub="across students" tone="amber"/>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-5">
-        <div className={`${card} p-5 lg:col-span-2`}>
-          <h3 className="mb-1 text-sm font-bold text-slate-900">Weekly averages</h3>
-          <p className="mb-4 text-xs text-slate-400">Score % by quiz week</p>
-          <WeekBarChart data={weekChart} />
+      {/* Live-now shortcut */}
+      {liveQuizzes.length > 0 && (
+        <div className={`${card} p-4`}>
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-900">
+            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"/><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"/></span>
+            Open right now
+          </h3>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {liveQuizzes.map(r => (
+              <button key={r.quiz.id} onClick={() => onOpenQuiz?.(r.quiz)} className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 text-left transition hover:bg-emerald-100/60">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-bold text-slate-800">{r.quiz.title}</p>
+                  <p className="truncate text-[10px] text-slate-500">{r.room?.name || "All students"} · {r.students} in</p>
+                </div>
+                <span className="shrink-0 text-[10px] font-semibold text-emerald-700">Watch live →</span>
+              </button>
+            ))}
+          </div>
         </div>
+      )}
 
-        <div className={`${card} p-5 lg:col-span-3`}>
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Trophy size={15} className="text-amber-500"/> Class ranking</h3>
-            <button className={`${btnG} px-3 py-1.5 text-xs`} onClick={exportClassCSV}><FileDown size={13}/> Export CSV</button>
-          </div>
-          <p className="mb-4 text-xs text-slate-400">By average score across all quizzes (best attempt counted per quiz)</p>
-          <div className="overflow-hidden rounded-xl border border-slate-100">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
-                <tr><th className="px-4 py-2.5">Rank</th><th className="px-4 py-2.5">Student</th><th className="px-4 py-2.5 text-right">Avg</th><th className="px-4 py-2.5 text-right">Best</th><th className="px-4 py-2.5 text-right hidden sm:table-cell">Flags</th></tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {board.map((s, i) => (
-                  <tr key={s.user_id} className={`transition hover:bg-slate-50/60 ${i<3?"bg-amber-50/30":""}`}>
-                    <td className={`px-4 py-2.5 font-bold ${num}`}>{i<3?["🥇","🥈","🥉"][i]:`#${i+1}`}</td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="grid h-7 w-7 place-items-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">{s.student.charAt(0)}</div>
-                        <span className="font-medium text-slate-800">{s.student}</span>
-                        {s.avg < 50 && <Badge tone="rose">At risk</Badge>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5 text-right"><span className={`font-bold ${num} ${s.avg>=80?"text-emerald-600":s.avg>=60?"text-violet-600":"text-rose-600"}`}>{s.avg}%</span></td>
-                    <td className={`px-4 py-2.5 text-right ${num} text-slate-500`}>{s.best}%</td>
-                    <td className="px-4 py-2.5 text-right hidden sm:table-cell"><Badge tone={vTone(s.violations)}>{s.violations}</Badge></td>
-                  </tr>
-                ))}
-                {!board.length && <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No attempts yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+      {/* Recent quiz results — the core of the dashboard */}
+      <div className={`${card} overflow-hidden`}>
+        <div className="border-b border-slate-100 px-5 py-3.5">
+          <h3 className="text-sm font-bold text-slate-900">Recent quizzes</h3>
+          <p className="text-[11px] text-slate-400">Most recent first · click any row to open results and live view</p>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+              <tr>
+                <th className="px-4 py-2.5">Quiz</th>
+                <th className="px-3 py-2.5 hidden sm:table-cell">Classroom</th>
+                <th className="px-3 py-2.5 text-center">Students</th>
+                <th className="px-3 py-2.5 text-right">Avg</th>
+                <th className="px-3 py-2.5 text-right hidden md:table-cell">Pass</th>
+                <th className="px-3 py-2.5 text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {!quizRows.length && <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">No quizzes yet. Create one from the Quizzes tab.</td></tr>}
+              {quizRows.map(r => (
+                <tr key={r.quiz.id} onClick={() => onOpenQuiz?.(r.quiz)} className="cursor-pointer transition hover:bg-slate-50/70">
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-slate-800">{r.quiz.title}</span>
+                      {r.flaggedStudents > 0 && <Badge tone="rose">{r.flaggedStudents} flagged</Badge>}
+                    </div>
+                    <span className="text-[10px] text-slate-400">Week {r.quiz.week}</span>
+                  </td>
+                  <td className="px-3 py-2.5 hidden sm:table-cell text-xs text-slate-500">{r.room?.name || "All students"}</td>
+                  <td className={`px-3 py-2.5 text-center ${num} text-slate-600`}>{r.students || "—"}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    {r.avg !== null
+                      ? <span className={`font-bold ${num} ${r.avg>=60?"text-emerald-600":r.avg>=40?"text-amber-600":"text-rose-600"}`}>{r.avg}%</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className={`px-3 py-2.5 text-right hidden md:table-cell ${num} text-slate-500`}>{r.pass !== null ? `${r.pass}%` : "—"}</td>
+                  <td className="px-3 py-2.5 text-center">
+                    {r.open
+                      ? <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500"/> Live</span>
+                      : <span className="text-[11px] text-slate-400">{r.openLabel}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -331,8 +424,8 @@ function FacultyOverview({ questions, quizzes, attempts }) {
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5">
           <div className="flex items-start gap-3">
             <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600"/>
-            <div>
-              <h4 className="text-sm font-bold text-amber-900">Students below 50% — early action helps</h4>
+            <div className="flex-1">
+              <h4 className="text-sm font-bold text-amber-900">{atRisk.length} student{atRisk.length===1?"":"s"} below 50% overall — early action helps</h4>
               <div className="mt-3 flex flex-wrap gap-2">
                 {atRisk.map(s => (
                   <div key={s.user_id} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs shadow-sm border border-amber-100">

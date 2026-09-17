@@ -17,7 +17,8 @@ import {
   Badge, Empty, Toast, Spinner, Stat, shuffle,
 } from "./ui.jsx";
 import { downloadCSV } from "../lib/csv.js";
-import { insertQuestions, fetchQuestions } from "../lib/db.js";
+import { insertQuestions, insertQuiz, fetchQuestions } from "../lib/db.js";
+import { useAuth } from "../lib/AuthContext.jsx";
 
 /* ── Q-Level definitions ────────────────────────────────────────── */
 export const Q_LEVELS = [
@@ -426,9 +427,17 @@ export function computeQAAPFProfile(attempts, allQuestions) {
    MAIN QAAPF PANEL (faculty view)
    ══════════════════════════════════════════════════════════════════ */
 export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, setQuizzes, setQuestions }) {
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("baseline");
   const [toast, setToast] = useState(null);
   const toast2 = (m, t="emerald") => { setToast({m,t}); setTimeout(()=>setToast(null),3500); };
+
+  const TABS = [
+    ["baseline",  "Baseline test"],
+    ["dashboard", "Results"],
+    ["cohort",    "Heatmap"],
+    ["bank",      "Question bank"],
+    ["levels",    "Framework"],
+  ];
 
   return (
     <div className="space-y-5">
@@ -440,22 +449,238 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <h2 className="text-lg font-extrabold text-white flex items-center gap-2"><Brain size={20}/> QAAPF</h2>
-              <p className="mt-0.5 text-sm text-violet-200">Quantitative & Analytical Aptitude Proficiency Framework</p>
-              <p className="mt-1 text-[11px] text-violet-300">Grounded in OECD PIAAC Numeracy · 8 domains · 6 proficiency bands · {QAAPF_QUESTIONS.length}+ questions</p>
+              <p className="mt-0.5 text-sm text-violet-200">Quantitative &amp; Analytical Aptitude Proficiency Framework</p>
+              <p className="mt-1 text-[11px] text-violet-300">Grounded in OECD PIAAC Numeracy · 8 domains · 6 proficiency bands · {QAAPF_QUESTIONS.length} questions</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {["dashboard","levels","bank","cohort"].map(t => (
-                <button key={t} onClick={()=>setTab(t)} className={`rounded-xl px-3 py-1.5 text-xs font-semibold capitalize transition ${tab===t?"bg-white text-violet-700":"bg-white/10 text-white hover:bg-white/20"}`}>{t}</button>
+              {TABS.map(([t, label]) => (
+                <button key={t} onClick={()=>setTab(t)} className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${tab===t?"bg-white text-violet-700":"bg-white/10 text-white hover:bg-white/20"}`}>{label}</button>
               ))}
             </div>
           </div>
         </div>
       </div>
 
+      {tab==="baseline"  && <BaselineGenerator questions={questions} setQuestions={setQuestions} quizzes={quizzes} setQuizzes={setQuizzes} classrooms={classrooms} attempts={attempts} onDone={toast2} goResults={()=>setTab("dashboard")}/>}
       {tab==="dashboard" && <Dashboard attempts={attempts} questions={questions} quizzes={quizzes} classrooms={classrooms}/>}
       {tab==="levels"    && <LevelsGuide/>}
       {tab==="bank"      && <QuestionInventory questions={questions} setQuestions={setQuestions} toast2={toast2}/>}
       {tab==="cohort"    && <CohortHeatmap attempts={attempts} questions={questions}/>}
+    </div>
+  );
+}
+
+/* ── Baseline test generator ───────────────────────────────────────
+   The purpose of QAAPF is diagnosis, and there was no way to actually
+   run a diagnostic. This builds a balanced test that touches all 8
+   domains across the difficulty range, imports any missing questions,
+   creates the quiz, and hands back a shareable link — the whole
+   workflow a teacher needs to establish a cohort baseline in one place. */
+function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, classrooms, attempts, onDone, goResults }) {
+  const { user, profile } = useAuth();
+  const rooms = useMemo(() => (classrooms || []).filter(c => !c.is_archived), [classrooms]);
+
+  const [classroomId, setClassroomId] = useState(rooms[0]?.id || "");
+  const [perDomain, setPerDomain]     = useState(5);       // questions per domain
+  const [minutes, setMinutes]         = useState(60);
+  const [mix, setMix]                 = useState("balanced");  // balanced | ramp
+  const [busy, setBusy]               = useState(false);
+  const [created, setCreated]         = useState(null);    // { quiz, link }
+  const [copied, setCopied]           = useState(false);
+
+  const totalQ = perDomain * DOMAINS.length;
+
+  // How many built-in questions exist per domain, to cap the request.
+  const availByDomain = useMemo(() => {
+    const m = {};
+    for (const d of DOMAINS) m[d.id] = QAAPF_QUESTIONS.filter(q => q.d === d.id).length;
+    return m;
+  }, []);
+  const minAvail = Math.min(...DOMAINS.map(d => availByDomain[d.id]));
+
+  /* Pick a difficulty-balanced sample from a domain. "balanced" spreads
+     easy/medium/hard evenly; "ramp" front-loads easier items so a weak
+     cohort isn't demoralised in the first minutes — either way every
+     domain is represented, which is what makes the result a profile
+     rather than a single number. */
+  const pickForDomain = (domId, n) => {
+    const pool = QAAPF_QUESTIONS.filter(q => q.d === domId);
+    const byLv = { 1: shuffle(pool.filter(q=>q.lv===1)), 2: shuffle(pool.filter(q=>q.lv===2)), 3: shuffle(pool.filter(q=>q.lv===3)) };
+    const order = mix === "ramp" ? [1,1,2,2,3] : [1,2,3,2,1];
+    const out = [];
+    let i = 0;
+    while (out.length < n && (byLv[1].length || byLv[2].length || byLv[3].length)) {
+      const lv = order[i % order.length]; i++;
+      if (byLv[lv].length) out.push(byLv[lv].pop());
+      else if (byLv[2].length) out.push(byLv[2].pop());
+      else if (byLv[1].length) out.push(byLv[1].pop());
+      else if (byLv[3].length) out.push(byLv[3].pop());
+    }
+    return out;
+  };
+
+  const generate = async () => {
+    if (!classroomId && rooms.length) { onDone("Pick a classroom first.", "amber"); return; }
+    setBusy(true);
+    try {
+      // 1. Assemble the blueprint across all domains.
+      const blueprint = DOMAINS.flatMap(d => pickForDomain(d.id, perDomain));
+
+      // 2. Ensure each blueprint question exists in the bank; import missing.
+      const norm = t => String(t||"").trim().toLowerCase().replace(/\s+/g," ");
+      const bankByText = new Map(questions.map(q => [norm(q.question), q]));
+      const missing = blueprint.filter(b => !bankByText.has(norm(b.q)));
+      let liveBank = questions;
+      if (missing.length) {
+        const rows = missing.map(q => ({
+          subject: "Aptitude", unit: q.u, topic: q.t, question: q.q,
+          options: q.o, correct: q.c,
+          difficulty: q.lv===1?"easy":q.lv===2?"medium":"hard", points: 1,
+        }));
+        const inserted = await insertQuestions(rows);
+        liveBank = [...questions, ...inserted];
+        setQuestions(liveBank);
+        for (const q of inserted) bankByText.set(norm(q.question), q);
+      }
+
+      // 3. Resolve the blueprint to real question ids, preserving order.
+      const ids = blueprint.map(b => bankByText.get(norm(b.q))?.id).filter(Boolean);
+      const units = Array.from(new Set(blueprint.map(b => b.u)));
+
+      // 4. Create the quiz. Closed answer key so students can't harvest it.
+      const room = rooms.find(r => r.id === classroomId);
+      const quiz = await insertQuiz({
+        title: `Aptitude Baseline${room ? " — " + room.name : ""}`,
+        subject: "Aptitude",
+        week: 1,
+        units,
+        question_ids: ids,
+        draw_count: ids.length,
+        duration_sec: Number(minutes) * 60,
+        max_attempts: 1,
+        classroom_id: classroomId || null,
+        is_open: true,
+        show_answers_policy: "after_close",
+        created_by: user.id,
+      });
+      setQuizzes(prev => [...prev, quiz]);
+
+      const link = `${window.location.origin}?quiz=${quiz.id}`;
+      setCreated({ quiz, link });
+      onDone(`Baseline created — ${ids.length} questions across ${DOMAINS.length} domains.`);
+    } catch (e) {
+      onDone(e.message || "Could not create the baseline test.", "rose");
+    }
+    setBusy(false);
+  };
+
+  const copyLink = async () => {
+    if (!created) return;
+    try { await navigator.clipboard.writeText(created.link); setCopied(true); setTimeout(()=>setCopied(false), 2500); } catch {}
+  };
+
+  /* How many students already have a baseline result, so the teacher
+     knows whether to run it or go straight to the profile. */
+  const baselineQuizIds = new Set(quizzes.filter(q => (q.subject||"").toLowerCase()==="aptitude").map(q=>q.id));
+  const baselineTakers = new Set(attempts.filter(a => baselineQuizIds.has(a.quiz_id)).map(a=>a.user_id)).size;
+
+  if (created) {
+    return (
+      <div className={`${card} p-6 space-y-5`}>
+        <div className="flex items-center gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-emerald-100 text-emerald-600"><CheckCircle2 size={22}/></div>
+          <div>
+            <h3 className="text-base font-extrabold text-slate-900">Baseline test is live</h3>
+            <p className="text-xs text-slate-500">"{created.quiz.title}" · {created.quiz.question_ids.length} questions · {Math.round(created.quiz.duration_sec/60)} min · one attempt</p>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-violet-100 bg-violet-50/50 p-4">
+          <p className="mb-1 text-xs font-semibold text-violet-700">Share this link with students</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded-lg bg-white px-3 py-2 font-mono text-xs text-slate-600">{created.link}</code>
+            <button onClick={copyLink} className={btnP}>{copied ? <><CheckCircle2 size={14}/> Copied</> : "Copy link"}</button>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-violet-600">
+            Students open the link, fill their profile once, and sit the test. Results build the aptitude profile automatically — no marking needed.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button onClick={goResults} className={btnG}><BarChart2 size={14}/> View results dashboard</button>
+          <button onClick={()=>setCreated(null)} className={btnG}><RefreshCw size={14}/> Create another</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className={`${card} p-5`}>
+        <div className="mb-4 flex items-start gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-100 text-violet-600"><Target size={20}/></div>
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Generate a diagnostic baseline test</h3>
+            <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+              Builds one balanced test spanning all 8 domains and the full difficulty range, so each student's result is a profile — strong in Commerce, weak in Algebra — not a single score. Missing questions are added to your bank automatically.
+            </p>
+          </div>
+        </div>
+
+        {baselineTakers > 0 && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-700">
+            <CheckCircle2 size={14}/> {baselineTakers} student{baselineTakers===1?" has":"s have"} already completed a baseline. See the Results tab for their profiles.
+          </div>
+        )}
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Classroom</label>
+            <select className={inp} value={classroomId} onChange={e=>setClassroomId(e.target.value)}>
+              {rooms.map(c => <option key={c.id} value={c.id}>{c.name}{c.section?` · ${c.section}`:""}{c.year?` (${c.year})`:""}</option>)}
+              {!rooms.length && <option value="">— create a classroom first —</option>}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Time limit (minutes)</label>
+            <input type="number" min={10} max={180} className={`${inp} ${num}`} value={minutes} onChange={e=>setMinutes(Math.max(10, Number(e.target.value)||10))}/>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Questions per domain</label>
+            <select className={inp} value={perDomain} onChange={e=>setPerDomain(Number(e.target.value))}>
+              {[3,4,5,6,8].filter(n => n <= minAvail).map(n => <option key={n} value={n}>{n} per domain · {n*8} total</option>)}
+            </select>
+            <p className="mt-1 text-[10px] text-slate-400">More per domain = a more reliable profile but a longer test.</p>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Difficulty order</label>
+            <select className={inp} value={mix} onChange={e=>setMix(e.target.value)}>
+              <option value="balanced">Balanced — even spread throughout</option>
+              <option value="ramp">Gentle ramp — easier questions first</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Blueprint preview */}
+        <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">This test will cover</p>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            {DOMAINS.map(d => (
+              <div key={d.id} className="flex items-center gap-1.5 rounded-lg bg-white px-2 py-1.5 text-[11px] text-slate-600 border border-slate-100">
+                <span>{d.icon}</span><span className="truncate">{d.short}</span>
+                <span className={`${num} ml-auto text-slate-400`}>{Math.min(perDomain, availByDomain[d.id])}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <p className="text-xs text-slate-500">{totalQ} questions · {minutes} min · one attempt · answers hidden until close</p>
+          <button className={btnP} disabled={busy || (!classroomId && rooms.length>0)} onClick={generate}>
+            {busy ? "Building…" : <><Sparkles size={15}/> Create baseline &amp; get link</>}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -49,6 +49,13 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
   const [connected, setConnected] = useState(false);
   const rowsRef = useRef([]);
 
+  // Stable order: name, then id. Never last_seen — sorting live rows by
+  // recency makes them leapfrog on every heartbeat, which is exactly the
+  // "names keep shuffling" problem this fixes.
+  const byName = (a, b) =>
+    (a.student_name || "").localeCompare(b.student_name || "") ||
+    String(a.id).localeCompare(String(b.id));
+
   /* Re-render on a timer so "3m ago" and the stale badge stay honest
      even when no realtime event has arrived. */
   useEffect(() => {
@@ -59,7 +66,7 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const data = await fetchLiveSessions(quiz.id);
+      const data = (await fetchLiveSessions(quiz.id)).sort(byName);
       if (!alive) return;
       rowsRef.current = data;
       setRows(data);
@@ -71,9 +78,12 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
       setConnected(true);
       const next = [...rowsRef.current];
       const i = next.findIndex(r => r.id === row.id);
-      if (i >= 0) next[i] = { ...next[i], ...row };
-      else next.unshift(row);
-      next.sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen));
+      if (i >= 0) {
+        next[i] = { ...next[i], ...row };        // update in place — no reorder
+      } else {
+        next.push(row);                          // new student — insert then sort once
+        next.sort(byName);
+      }
       rowsRef.current = next;
       setRows(next);
     });
@@ -82,9 +92,17 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
        publication). Poll as a fallback so the panel still works — just
        less immediately — instead of appearing permanently empty. */
     const poll = setInterval(async () => {
-      const data = await fetchLiveSessions(quiz.id);
-      rowsRef.current = data;
-      setRows(data);
+      const fresh = await fetchLiveSessions(quiz.id);
+      const map = new Map(fresh.map(r => [r.id, r]));
+      // Update known rows in their existing slots; append any new ones.
+      const merged = rowsRef.current
+        .filter(r => map.has(r.id))
+        .map(r => ({ ...r, ...map.get(r.id) }));
+      const known = new Set(merged.map(r => r.id));
+      for (const r of fresh) if (!known.has(r.id)) merged.push(r);
+      merged.sort(byName);
+      rowsRef.current = merged;
+      setRows(merged);
     }, 15000);
 
     return () => { alive = false; unsub(); clearInterval(poll); };
@@ -112,7 +130,7 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
 
   const refresh = async () => {
     setLoading(true);
-    const data = await fetchLiveSessions(quiz.id);
+    const data = (await fetchLiveSessions(quiz.id)).sort(byName);
     rowsRef.current = data;
     setRows(data);
     setLoading(false);
@@ -160,8 +178,9 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
             <thead className="sticky top-0 bg-slate-50 text-slate-500">
               <tr>
                 <th className="px-4 py-2.5 text-left font-semibold">Student</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Progress / Score</th>
-                <th className="px-3 py-2.5 text-center font-semibold">Time left / taken</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Progress</th>
+                <th className="px-3 py-2.5 text-right font-semibold">Score</th>
+                <th className="px-3 py-2.5 text-center font-semibold">Time</th>
                 <th className="px-3 py-2.5 text-center font-semibold">Flags</th>
                 <th className="px-4 py-2.5 text-left font-semibold hidden md:table-cell">Last event</th>
               </tr>
@@ -189,21 +208,7 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
                     </td>
                     <td className="px-3 py-2.5">
                       {done
-                        ? (
-                          <span className="flex items-center gap-2">
-                            <CheckCircle2 size={12} className="shrink-0 text-emerald-600"/>
-                            {attempt
-                              ? <span className={`${num} font-bold ${attempt.percent >= 60 ? "text-emerald-600" : attempt.percent >= 40 ? "text-amber-600" : "text-rose-600"}`}>
-                                  {attempt.percent}% <span className="font-normal text-slate-400">({attempt.score}/{attempt.max_score})</span>
-                                </span>
-                              /* The submit-then-refetch race: live_sessions flips to
-                                 "submitted" the instant the student's browser reports
-                                 it, which can arrive a beat before the graded attempt
-                                 row does. Say so plainly rather than showing a blank
-                                 cell that reads as a bug. */
-                              : <span className="text-slate-400">Submitted · grading…</span>}
-                          </span>
-                        )
+                        ? <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600"><CheckCircle2 size={12} className="shrink-0"/> Submitted</span>
                         : gone
                           ? <span className="flex items-center gap-1 text-slate-400"><WifiOff size={12}/> Left the exam</span>
                           : (
@@ -214,6 +219,18 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
                               <span className={`${num} text-[11px] text-slate-500`}>{r.answered}/{r.total}</span>
                             </div>
                           )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      {done
+                        ? (attempt
+                            ? <span className={`${num} font-bold ${attempt.percent >= 60 ? "text-emerald-600" : attempt.percent >= 40 ? "text-amber-600" : "text-rose-600"}`}>
+                                {attempt.percent}% <span className="font-normal text-[10px] text-slate-400">{attempt.score}/{attempt.max_score}</span>
+                              </span>
+                            /* The submit-then-refetch race: live_sessions flips to
+                               "submitted" the instant the browser reports it, which
+                               can arrive a beat before the graded attempt row does. */
+                            : <span className="text-[10px] text-slate-400">grading…</span>)
+                        : <span className="text-slate-300">—</span>}
                     </td>
                     <td className={`px-3 py-2.5 text-center ${num} ${(r.remaining_sec ?? 0) < 120 && !done ? "font-bold text-rose-600" : "text-slate-500"}`}>
                       {done
