@@ -16,12 +16,14 @@ import {
   fetchAttempts, fetchMyAttempts, insertAttempt,
   fetchMyClassrooms, joinClassroomByCode, leaveClassroomAsStudent,
   logAudit, subscribeToAttempts,
+  startLiveSession, touchLiveSession, endLiveSession,
 } from "./lib/db";
 import { parseWorkbook, downloadTemplate } from "./lib/xlsx-import";
 import { downloadCSV } from "./lib/csv";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
 import QAAPFPanel, { computeQAAPFProfile, Q_LEVELS, getQLevel } from "./components/QAAPF.jsx";
+import LiveInvigilation from "./components/LiveInvigilation.jsx";
 import AdminPanel from "./components/AdminPanel";
 import ClassroomManager from "./components/Classrooms";
 import {
@@ -1484,6 +1486,8 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
         </div>
       </div>
 
+      <LiveInvigilation quiz={quiz}/>
+
       {/* Fix 3: Quiz link card */}
       <div className={`${card} border-violet-100 bg-violet-50/40 p-4 flex flex-wrap items-center gap-3`}>
         <div className="flex-1 min-w-0">
@@ -2203,6 +2207,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     const payload = buildAttemptPayload();
     try {
       await onSubmit(payload);
+      endLiveSession(quiz.id, user.id, "submitted");
     } catch (err) {
       // Submission failed (network drop, etc). The draft is still in
       // localStorage — offer a retry instead of silently losing the exam.
@@ -2231,6 +2236,71 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   };
 
   const answered = answers.filter(a => a !== null).length;
+
+  /* Live invigilation heartbeat. The faculty dashboard cannot show a
+     student who has not submitted anything yet, so the browser
+     publishes its own progress. Deliberately fire-and-forget: every
+     helper swallows its errors, because an invigilation feature must
+     never be able to interrupt the exam it is watching. */
+  const liveMeta = useRef({ answered: 0, violations: 0, lastFlag: null, remaining: 0 });
+  liveMeta.current = {
+    answered,
+    violations: log.length,
+    lastFlag: log.length ? log[log.length - 1].label : null,
+    remaining,
+  };
+
+  useEffect(() => {
+    if (!user?.id || !quiz?.id) return;
+    const meta = (() => {
+      try { return JSON.parse(localStorage.getItem(`quizpro:profile:${user.id}`) || "{}"); }
+      catch { return {}; }
+    })();
+    startLiveSession({
+      quiz_id: quiz.id,
+      user_id: user.id,
+      student_name: profile?.full_name || "Student",
+      student_course: meta.course || null,
+      student_cu_id: meta.cu_id || null,
+      total: drawn.length,
+      answered: 0,
+      violations: 0,
+      remaining_sec: quiz.duration_sec,
+    });
+
+    const tick = setInterval(() => {
+      const m = liveMeta.current;
+      touchLiveSession(quiz.id, user.id, {
+        answered: m.answered,
+        violations: m.violations,
+        last_flag: m.lastFlag,
+        remaining_sec: m.remaining,
+      });
+    }, 8000);
+
+    /* A closed tab would otherwise sit on the dashboard as "active"
+       until the row goes stale. Mark it abandoned on the way out. */
+    const bye = () => endLiveSession(quiz.id, user.id, "abandoned");
+    window.addEventListener("pagehide", bye);
+
+    return () => {
+      clearInterval(tick);
+      window.removeEventListener("pagehide", bye);
+    };
+  }, [user?.id, quiz?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Push immediately when a flag is raised — an integrity event is the
+     one thing an invigilator needs now, not up to eight seconds later. */
+  useEffect(() => {
+    if (!log.length || !user?.id || !quiz?.id) return;
+    const m = liveMeta.current;
+    touchLiveSession(quiz.id, user.id, {
+      answered: m.answered,
+      violations: m.violations,
+      last_flag: m.lastFlag,
+      remaining_sec: m.remaining,
+    });
+  }, [log.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const cur = drawn[idx];
   const low = remaining <= 30;
 

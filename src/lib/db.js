@@ -368,3 +368,75 @@ export async function leaveClassroomAsStudent(classroomId) {
     .eq("user_id", user.id);
   if (error) throw error;
 }
+
+/* ── Live invigilation ─────────────────────────────────────────────
+   An attempts row appears only at submit, so nothing exists to watch
+   while a student is still writing. live_sessions carries one row per
+   in-progress sitting, refreshed by the student's browser.
+
+   Every call here fails silently. Invigilation is an observability
+   feature: if the table is missing because STEP4 has not been run, or
+   the network drops, the student must still be able to sit and submit
+   the exam. Never let telemetry break the thing it is observing. */
+
+export async function startLiveSession(row) {
+  try {
+    const { data, error } = await supabase
+      .from("live_sessions")
+      .upsert({ ...row, status: "active", last_seen: new Date().toISOString() },
+              { onConflict: "quiz_id,user_id" })
+      .select().single();
+    if (error) throw error;
+    return data;
+  } catch (e) {
+    console.warn("Live session unavailable (run STEP4 SQL):", e.message);
+    return null;
+  }
+}
+
+export async function touchLiveSession(quizId, userId, patch) {
+  try {
+    await supabase
+      .from("live_sessions")
+      .update({ ...patch, last_seen: new Date().toISOString() })
+      .eq("quiz_id", quizId).eq("user_id", userId);
+  } catch (_) { /* observability only */ }
+}
+
+export async function endLiveSession(quizId, userId, status = "submitted") {
+  try {
+    await supabase
+      .from("live_sessions")
+      .update({ status, last_seen: new Date().toISOString() })
+      .eq("quiz_id", quizId).eq("user_id", userId);
+  } catch (_) { /* observability only */ }
+}
+
+export async function fetchLiveSessions(quizId) {
+  try {
+    const { data, error } = await supabase
+      .from("live_sessions").select("*")
+      .eq("quiz_id", quizId)
+      .order("last_seen", { ascending: false });
+    if (error) throw error;
+    return data || [];
+  } catch (_) { return []; }
+}
+
+/* Subscribes to every change on a quiz's live sessions. Returns an
+   unsubscribe function, or a no-op if realtime is unavailable, so the
+   caller can always treat the result as a cleanup callback. */
+export function subscribeToLiveSessions(quizId, onChange) {
+  try {
+    const channel = supabase
+      .channel(`live-${quizId}`)
+      .on("postgres_changes",
+          { event: "*", schema: "public", table: "live_sessions", filter: `quiz_id=eq.${quizId}` },
+          payload => onChange(payload.new || payload.old, payload.eventType))
+      .subscribe();
+    return () => { try { supabase.removeChannel(channel); } catch (_) {} };
+  } catch (e) {
+    console.warn("Live realtime unavailable:", e.message);
+    return () => {};
+  }
+}
