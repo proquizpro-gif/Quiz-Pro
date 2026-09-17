@@ -100,6 +100,43 @@ export const QAAPF_QUESTIONS = [
 { d:"B", u:"Averages", t:"Averages", q:"Average of 5 numbers is 14. A 6th number 20 is added. New average:", o:["15","16","14.5","17"], c:0, lv:1 },
 { d:"B", u:"Averages", t:"Averages", q:"The average salary of 8 workers is ₹15,000. If a supervisor earning ₹25,000 joins, the new average is:", o:["₹16,111","₹16,000","₹15,556","₹17,000"], c:0, lv:2 },
 
+/* ── Expansion: Domain A — Numerical Foundation ─────────────────── */
+{ d:"A", u:"Whole Numbers", t:"Whole Numbers", q:"The sum of the first 20 natural numbers is:", o:["210","200","190","220"], c:0, lv:2 },
+{ d:"A", u:"Whole Numbers", t:"Whole Numbers", q:"What is the smallest number that must be added to 4,321 to make it divisible by 9?", o:["5","2","4","7"], c:0, lv:2 },
+{ d:"A", u:"Number Sense", t:"Number Sense", q:"Which of the following is an irrational number?", o:["√2","0.75","22/7","−4"], c:0, lv:2 },
+{ d:"A", u:"Number Sense", t:"Number Sense", q:"The square root of 1,764 is:", o:["42","46","38","44"], c:0, lv:2 },
+{ d:"A", u:"Number Sense", t:"Number Sense", q:"If a number is divisible by both 6 and 8, it must be divisible by:", o:["24","48","14","12"], c:0, lv:3 },
+{ d:"A", u:"Number Sense", t:"Number Sense", q:"The product of HCF and LCM of two numbers equals:", o:["The product of the numbers","Their sum","Their difference","Their average"], c:0, lv:2 },
+{ d:"A", u:"BODMAS", t:"BODMAS", q:"Evaluate: 6 + 2 × (9 − 4) ÷ 5", o:["8","10","4","16"], c:0, lv:2 },
+{ d:"A", u:"BODMAS", t:"BODMAS", q:"Simplify: (12 ÷ 4 + 2) × 3 − 2²", o:["11","15","13","9"], c:0, lv:3 },
+{ d:"A", u:"Fractions", t:"Fractions", q:"What fraction of an hour is 24 minutes?", o:["2/5","1/3","3/8","1/4"], c:0, lv:1 },
+{ d:"A", u:"Fractions", t:"Fractions", q:"Arrange in ascending order: 2/3, 3/5, 5/8", o:["3/5, 5/8, 2/3","2/3, 3/5, 5/8","5/8, 3/5, 2/3","3/5, 2/3, 5/8"], c:0, lv:3 },
+{ d:"A", u:"Fractions", t:"Fractions", q:"If 2/5 of a number is 48, the number is:", o:["120","96","110","132"], c:0, lv:2 },
+{ d:"A", u:"Decimals", t:"Decimals", q:"Express 0.375 as a fraction in lowest terms:", o:["3/8","5/16","7/20","3/7"], c:0, lv:2 },
+{ d:"A", u:"Decimals", t:"Decimals", q:"2.5 ÷ 0.05 = ?", o:["50","5","500","0.5"], c:0, lv:2 },
+{ d:"A", u:"Approximation", t:"Approximation", q:"Approximate: √99 × √26", o:["~50","~45","~55","~60"], c:0, lv:3 },
+{ d:"A", u:"Approximation", t:"Approximation", q:"Approximately what is 19.8% of 2,510?", o:["500","450","550","600"], c:0, lv:2 },
+{ d:"A", u:"Whole Numbers", t:"Whole Numbers", q:"How many three-digit numbers are divisible by 7?", o:["128","127","129","126"], c:0, lv:3 },
+
+/* ── Expansion: Domain B — Commercial Arithmetic ────────────────── */
+{ d:"B", u:"Percentages", t:"Percentages", q:"If the price of a commodity rises by 25%, by what percent must consumption be reduced to keep expenditure unchanged?", o:["20%","25%","15%","30%"], c:0, lv:3 },
+{ d:"B", u:"Percentages", t:"Percentages", q:"A student scored 480 out of 600. The percentage is:", o:["80%","75%","82%","78%"], c:0, lv:1 },
+{ d:"B", u:"Percentages", t:"Percentages", q:"45 is what percent of 180?", o:["25%","20%","30%","35%"], c:0, lv:1 },
+{ d:"B", u:"Percentages", t:"Percentages", q:"After a 10% increase followed by a 10% decrease, a value of ₹1,000 becomes:", o:["₹990","₹1,000","₹1,010","₹980"], c:0, lv:3 },
+{ d:"B", u:"Profit & Loss", t:"Profit & Loss", q:"A shopkeeper marks goods 40% above cost and allows a 25% discount. His profit percent is:", o:["5%","10%","15%","12%"], c:0, lv:3 },
+{ d:"B", u:"Profit & Loss", t:"Profit & Loss", q:"If CP of 20 articles equals SP of 16 articles, the profit percent is:", o:["25%","20%","30%","16%"], c:0, lv:3 },
+{ d:"B", u:"Profit & Loss", t:"Profit & Loss", q:"An item bought for ₹250 is sold for ₹200. The loss percent is:", o:["20%","25%","15%","18%"], c:0, lv:1 },
+{ d:"B", u:"Discount", t:"Discount", q:"Successive discounts of 20% and 25% are equivalent to a single discount of:", o:["40%","45%","35%","50%"], c:0, lv:3 },
+{ d:"B", u:"Discount", t:"Discount", q:"A ₹2,000 item is offered at ₹1,700. The discount percent is:", o:["15%","17%","12%","20%"], c:0, lv:1 },
+{ d:"B", u:"Simple Interest", t:"Simple Interest", q:"In what time will ₹5,000 amount to ₹6,500 at 10% simple interest?", o:["3 years","2 years","4 years","2.5 years"], c:0, lv:2 },
+{ d:"B", u:"Simple Interest", t:"Simple Interest", q:"A sum doubles itself in 8 years at simple interest. The rate per annum is:", o:["12.5%","10%","15%","8%"], c:0, lv:3 },
+{ d:"B", u:"Compound Interest", t:"Compound Interest", q:"The difference between CI and SI on ₹5,000 at 10% for 2 years is:", o:["₹50","₹100","₹25","₹75"], c:0, lv:3 },
+{ d:"B", u:"Ratio & Proportion", t:"Ratio & Proportion", q:"If 3 pens cost ₹45, the cost of 8 pens is:", o:["₹120","₹100","₹135","₹110"], c:0, lv:1 },
+{ d:"B", u:"Ratio & Proportion", t:"Ratio & Proportion", q:"Two numbers are in ratio 5:7. If 9 is added to each, the ratio becomes 2:3. The smaller number is:", o:["45","35","40","50"], c:0, lv:3 },
+{ d:"B", u:"Averages", t:"Averages", q:"The average of 11 results is 50. The average of the first six is 49 and of the last six is 52. The sixth result is:", o:["56","54","52","58"], c:0, lv:3 },
+{ d:"B", u:"Averages", t:"Averages", q:"The mean of 4, 8, 12, 16 and 20 is:", o:["12","10","14","13"], c:0, lv:1 },
+{ d:"B", u:"Averages", t:"Averages", q:"A batsman averages 40 in 10 innings. To raise his average to 44, his next score must be:", o:["84","80","88","76"], c:0, lv:3 },
+
 /* ── DOMAIN C: Quantitative Reasoning ───────────────────────────── */
 { d:"C", u:"Number Series", t:"Number Series", q:"2, 5, 10, 17, 26, ?", o:["37","35","36","40"], c:0, lv:1 },
 { d:"C", u:"Number Series", t:"Number Series", q:"3, 6, 12, 24, 48, ?", o:["96","72","84","100"], c:0, lv:1 },
@@ -123,6 +160,42 @@ export const QAAPF_QUESTIONS = [
 { d:"D", u:"Inequalities", t:"Algebra", q:"If 2x + 3 > 11, which is NOT a possible value of x?", o:["5","6","4","7"], c:2, lv:2 },
 { d:"D", u:"Functions", t:"Algebra", q:"f(x) = 2x² − x + 3. f(2) = ?", o:["9","11","13","7"], c:0, lv:3 },
 
+/* ── Expansion: Domain C — Quantitative Reasoning ───────────────── */
+{ d:"C", u:"Number Series", t:"Number Series", q:"7, 14, 28, 56, ?", o:["112","98","84","120"], c:0, lv:1 },
+{ d:"C", u:"Number Series", t:"Number Series", q:"1, 8, 27, 64, ?", o:["125","100","81","144"], c:0, lv:2 },
+{ d:"C", u:"Number Series", t:"Number Series", q:"2, 6, 12, 20, 30, ?", o:["42","40","36","44"], c:0, lv:2 },
+{ d:"C", u:"Number Series", t:"Number Series", q:"120, 60, 30, 15, ?", o:["7.5","10","5","12"], c:0, lv:1 },
+{ d:"C", u:"Number Series", t:"Number Series", q:"3, 7, 16, 35, 74, ?", o:["153","148","155","160"], c:0, lv:3 },
+{ d:"C", u:"Number Series", t:"Number Series", q:"1, 2, 6, 24, 120, ?", o:["720","600","640","840"], c:0, lv:2 },
+{ d:"C", u:"Missing Numbers", t:"Missing Numbers", q:"If 5 # 3 = 34 and 7 # 2 = 53, then 4 # 6 = ?", o:["52","48","50","56"], c:0, lv:3 },
+{ d:"C", u:"Missing Numbers", t:"Missing Numbers", q:"36 ÷ ? + 5 = 14", o:["4","6","3","9"], c:0, lv:1 },
+{ d:"C", u:"Mathematical Patterns", t:"Patterns", q:"In the sequence 2, 4, 8, 16 the ratio between consecutive terms is:", o:["Constant at 2","Increasing","Decreasing","Random"], c:0, lv:1 },
+{ d:"C", u:"Mathematical Patterns", t:"Patterns", q:"Which number does not belong: 4, 9, 16, 24, 36?", o:["24","16","9","36"], c:0, lv:2 },
+{ d:"C", u:"Quantitative Comparisons", t:"QC", q:"Compare: A = 20% of 150, B = 15% of 200", o:["A = B","A > B","B > A","Cannot determine"], c:0, lv:2 },
+{ d:"C", u:"Quantitative Comparisons", t:"QC", q:"Which is largest: 3/7, 0.45, 43%?", o:["0.45","3/7","43%","All equal"], c:0, lv:3 },
+{ d:"C", u:"Estimation", t:"Estimation", q:"Estimate 4,987 ÷ 49:", o:["~100","~120","~80","~150"], c:0, lv:1 },
+{ d:"C", u:"Estimation", t:"Estimation", q:"A shop sells 87 units daily at ₹412 each. Approximate monthly revenue (30 days):", o:["₹10.7 lakh","₹8 lakh","₹12 lakh","₹9 lakh"], c:0, lv:3 },
+{ d:"C", u:"Multi-step Reasoning", t:"Multi-step", q:"A father is 3 times his son's age. In 12 years he will be twice. Son's present age:", o:["12","10","14","16"], c:0, lv:3 },
+{ d:"C", u:"Multi-step Reasoning", t:"Multi-step", q:"A man walks 3 km north, then 4 km east. His distance from start:", o:["5 km","7 km","6 km","4 km"], c:0, lv:2 },
+{ d:"C", u:"Multi-step Reasoning", t:"Multi-step", q:"12 workers build a wall in 10 days. How long for 15 workers?", o:["8 days","9 days","7 days","12 days"], c:0, lv:2 },
+
+/* ── Expansion: Domain D — Algebraic Thinking ───────────────────── */
+{ d:"D", u:"Basic Algebra", t:"Algebra", q:"Expand: (x + 3)(x − 2)", o:["x² + x − 6","x² − x − 6","x² + 5x − 6","x² − 6"], c:0, lv:2 },
+{ d:"D", u:"Basic Algebra", t:"Algebra", q:"If a = 4 and b = −2, evaluate 3a² − 2b:", o:["52","44","48","40"], c:0, lv:2 },
+{ d:"D", u:"Basic Algebra", t:"Algebra", q:"Factorise: x² − 9", o:["(x−3)(x+3)","(x−9)(x+1)","(x−3)²","(x+9)(x−1)"], c:0, lv:2 },
+{ d:"D", u:"Basic Algebra", t:"Algebra", q:"Simplify: 4x + 3y − 2x + 5y", o:["2x + 8y","6x + 8y","2x + 2y","6x + 2y"], c:0, lv:1 },
+{ d:"D", u:"Linear Equations", t:"Algebra", q:"Solve: (x/3) + 4 = 10", o:["18","12","21","15"], c:0, lv:1 },
+{ d:"D", u:"Linear Equations", t:"Algebra", q:"Solve: 5(2x − 3) = 3(x + 4)", o:["27/7","3","4","21/7"], c:0, lv:3 },
+{ d:"D", u:"Linear Equations", t:"Algebra", q:"The sum of three consecutive integers is 72. The largest is:", o:["25","24","23","26"], c:0, lv:2 },
+{ d:"D", u:"Simultaneous Equations", t:"Algebra", q:"3x + 2y = 16 and x + y = 6. Find x.", o:["4","3","5","2"], c:0, lv:2 },
+{ d:"D", u:"Simultaneous Equations", t:"Algebra", q:"The cost of 2 pens and 3 books is ₹340; 3 pens and 2 books cost ₹310. Cost of one book:", o:["₹100","₹80","₹90","₹110"], c:0, lv:3 },
+{ d:"D", u:"Inequalities", t:"Algebra", q:"Solve: 3x − 5 ≤ 10", o:["x ≤ 5","x ≥ 5","x < 5","x > 5"], c:0, lv:2 },
+{ d:"D", u:"Inequalities", t:"Algebra", q:"If −2 < x < 5 and x is an integer, how many values can x take?", o:["6","7","5","8"], c:0, lv:3 },
+{ d:"D", u:"Functions", t:"Algebra", q:"If f(x) = 3x − 4, find f(5):", o:["11","15","19","7"], c:0, lv:1 },
+{ d:"D", u:"Functions", t:"Algebra", q:"If f(x) = x² and g(x) = x + 2, then f(g(1)) = ?", o:["9","3","6","4"], c:0, lv:3 },
+{ d:"D", u:"Functions", t:"Algebra", q:"A linear function passes through (0, 3) and (2, 7). Its slope is:", o:["2","3","4","1.5"], c:0, lv:2 },
+{ d:"D", u:"Basic Algebra", t:"Algebra", q:"If x + 1/x = 5, then x² + 1/x² equals:", o:["23","25","21","27"], c:0, lv:3 },
+
 /* ── DOMAIN E: Data Interpretation ──────────────────────────────── */
 { d:"E", u:"Tables", t:"Tables", q:"A table shows sales: Mon=120, Tue=95, Wed=140, Thu=110, Fri=135. Average daily sales:", o:["120","110","115","125"], c:0, lv:1 },
 { d:"E", u:"Tables", t:"Tables", q:"In the same table, which day had below-average sales?", o:["Tuesday and Thursday","Monday only","Wednesday only","Friday only"], c:0, lv:2 },
@@ -145,6 +218,40 @@ export const QAAPF_QUESTIONS = [
 { d:"F", u:"Deductive Reasoning", t:"Deductive", q:"All mangoes are fruits. Some fruits are sweet. Therefore:", o:["Some mangoes may be sweet","All mangoes are sweet","No mango is sweet","All fruits are mango"], c:0, lv:3 },
 { d:"F", u:"Analytical Puzzles", t:"Puzzles", q:"3 boxes contain only apples, only oranges, or both. All labels are wrong. The 'Both' box has one apple. The other boxes contain:", o:["Apples=oranges, Oranges=both","Apples=both, Oranges=apples","Cannot determine","Both are apples"], c:1, lv:3 },
 
+/* ── Expansion: Domain E — Data Interpretation ──────────────────── */
+{ d:"E", u:"Tables", t:"Tables", q:"Quarterly profit (₹cr): Q1=12, Q2=18, Q3=15, Q4=21. Total annual profit:", o:["₹66 cr","₹60 cr","₹70 cr","₹64 cr"], c:0, lv:1 },
+{ d:"E", u:"Tables", t:"Tables", q:"Using the same data, which quarter contributed closest to 25% of annual profit?", o:["Q3","Q1","Q2","Q4"], c:0, lv:3 },
+{ d:"E", u:"Tables", t:"Tables", q:"Enrolment: MBA=180, BBA=240, BCom=300. MBA students as a percentage of the total:", o:["25%","30%","20%","24%"], c:0, lv:2 },
+{ d:"E", u:"Bar Charts", t:"Bar Charts", q:"A bar chart shows monthly output: Jan=40, Feb=55, Mar=35, Apr=70. The range is:", o:["35","30","70","45"], c:0, lv:1 },
+{ d:"E", u:"Bar Charts", t:"Bar Charts", q:"Using the same output data, the percentage rise from March to April is:", o:["100%","50%","75%","35%"], c:0, lv:2 },
+{ d:"E", u:"Pie Charts", t:"Pie Charts", q:"In a pie chart, a sector representing 25% corresponds to a central angle of:", o:["90°","75°","120°","60°"], c:0, lv:1 },
+{ d:"E", u:"Pie Charts", t:"Pie Charts", q:"A sector has a central angle of 54°. The percentage it represents is:", o:["15%","18%","12%","20%"], c:0, lv:2 },
+{ d:"E", u:"Line Graphs", t:"Line Graph", q:"Sales fell steadily from 500 units in Week 1 to 300 units in Week 5. Average weekly decline:", o:["50 units","40 units","60 units","45 units"], c:0, lv:2 },
+{ d:"E", u:"Line Graphs", t:"Line Graph", q:"A line graph is flat across three consecutive periods. This indicates:", o:["No change in the measured value","Steady growth","Steady decline","Missing data"], c:0, lv:1 },
+{ d:"E", u:"Percentage Change", t:"% Change", q:"Costs rose from ₹80 lakh to ₹92 lakh. The percentage increase is:", o:["15%","12%","18%","20%"], c:0, lv:2 },
+{ d:"E", u:"Percentage Change", t:"% Change", q:"A value falls 20% then rises 20%. Compared with the original it is:", o:["4% lower","Unchanged","4% higher","2% lower"], c:0, lv:3 },
+{ d:"E", u:"Growth Rates", t:"Growth", q:"Revenue doubled over 4 years. The approximate compound annual growth rate is:", o:["19%","25%","15%","12%"], c:0, lv:3 },
+{ d:"E", u:"Growth Rates", t:"Growth", q:"Users grew 10% annually from 20,000. After 2 years the count is:", o:["24,200","24,000","22,000","26,000"], c:0, lv:2 },
+{ d:"E", u:"Multi-variable Data", t:"Multi-var", q:"Four outlets report revenue 500/600/450/700 and costs 300/420/270/560. Which has the highest margin percentage?", o:["Outlet 3","Outlet 1","Outlet 2","Outlet 4"], c:0, lv:3 },
+{ d:"E", u:"Multi-variable Data", t:"Multi-var", q:"Department budgets: A=₹4L, B=₹6L, C=₹10L. B's share of the total is:", o:["30%","25%","35%","20%"], c:0, lv:2 },
+
+/* ── Expansion: Domain F — Logical & Analytical Reasoning ───────── */
+{ d:"F", u:"Logical Sequences", t:"Sequences", q:"A, C, F, J, ?", o:["O","M","N","P"], c:0, lv:2 },
+{ d:"F", u:"Logical Sequences", t:"Sequences", q:"Z, X, V, T, ?", o:["R","S","Q","U"], c:0, lv:1 },
+{ d:"F", u:"Logical Sequences", t:"Sequences", q:"AB, DE, GH, JK, ?", o:["MN","LM","NO","KL"], c:0, lv:2 },
+{ d:"F", u:"Arrangement", t:"Arrangement", q:"In a row of 25 students, Ravi is 11th from the left. His position from the right is:", o:["15th","14th","16th","13th"], c:0, lv:2 },
+{ d:"F", u:"Arrangement", t:"Arrangement", q:"Five books are stacked. A is above B, C is below B, D is at the top. A's position from the top is:", o:["2nd","1st","3rd","4th"], c:0, lv:2 },
+{ d:"F", u:"Arrangement", t:"Arrangement", q:"P, Q, R, S sit around a circular table. P faces R and Q is to P's immediate left. Who is to P's right?", o:["S","Q","R","Cannot determine"], c:0, lv:3 },
+{ d:"F", u:"Classification", t:"Classification", q:"Find the odd one out: Triangle, Square, Circle, Rectangle", o:["Circle","Triangle","Square","Rectangle"], c:0, lv:1 },
+{ d:"F", u:"Classification", t:"Classification", q:"Find the odd one out: 2, 3, 5, 7, 9, 11", o:["9","5","7","11"], c:0, lv:1 },
+{ d:"F", u:"Conditional Reasoning", t:"Conditional", q:"If it rains, the match is cancelled. The match was not cancelled. Therefore:", o:["It did not rain","It rained","The match was postponed","Cannot conclude"], c:0, lv:2 },
+{ d:"F", u:"Conditional Reasoning", t:"Conditional", q:"Only graduates can apply. Meena applied successfully. Therefore:", o:["Meena is a graduate","Meena may not be a graduate","Meena is employed","Cannot conclude"], c:0, lv:2 },
+{ d:"F", u:"Deductive Reasoning", t:"Deductive", q:"Some managers are engineers. All engineers are graduates. Which follows?", o:["Some managers are graduates","All managers are graduates","No manager is a graduate","All graduates are managers"], c:0, lv:3 },
+{ d:"F", u:"Deductive Reasoning", t:"Deductive", q:"No student failed. Rahul is a student. Therefore Rahul:", o:["Passed","Failed","May have failed","Did not appear"], c:0, lv:1 },
+{ d:"F", u:"Analytical Puzzles", t:"Puzzles", q:"Four friends have different incomes. A earns more than B, C earns less than B, D earns more than A. Who earns least?", o:["C","B","A","D"], c:0, lv:2 },
+{ d:"F", u:"Analytical Puzzles", t:"Puzzles", q:"A clock shows 3:15. The angle between the hands is:", o:["7.5°","0°","15°","30°"], c:0, lv:3 },
+{ d:"F", u:"Analytical Puzzles", t:"Puzzles", q:"If today is Wednesday, what day will it be after 100 days?", o:["Friday","Thursday","Saturday","Sunday"], c:0, lv:3 },
+
 /* ── DOMAIN G: Applied Quantitative Reasoning ───────────────────── */
 { d:"G", u:"Workplace Problems", t:"Applied", q:"A manager earns ₹45,000/month. She gets 12% annual bonus. Her bonus amount:", o:["₹64,800","₹54,000","₹5,400","₹6,480"], c:0, lv:2 },
 { d:"G", u:"Workplace Problems", t:"Applied", q:"A team of 4 completes a project in 12 days. How many days for 6 team members (same rate)?", o:["8","6","9","10"], c:0, lv:2 },
@@ -162,6 +269,40 @@ export const QAAPF_QUESTIONS = [
 { d:"H", u:"Evaluation", t:"Evaluation", q:"A student got 75% in 4 subjects. To achieve 80% overall in 5 subjects, marks needed in the 5th (out of 100):", o:["100","95","90","85"], c:0, lv:3 },
 { d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"The product of two consecutive even numbers is 288. The larger number:", o:["18","16","20","14"], c:0, lv:3 },
 { d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"Three numbers are in ratio 2:3:4. Their LCM is 48. The largest number:", o:["16","8","12","24"], c:0, lv:3 },
+/* ── Expansion: Domain G — Applied Quantitative Reasoning ───────── */
+{ d:"G", u:"Workplace Problems", t:"Applied", q:"An employee works 8 hours daily for 22 days at ₹250 per hour. Monthly earnings:", o:["₹44,000","₹40,000","₹48,000","₹42,000"], c:0, lv:1 },
+{ d:"G", u:"Workplace Problems", t:"Applied", q:"A machine produces 240 units in 6 hours. At the same rate, units in a 9-hour shift:", o:["360","320","400","300"], c:0, lv:1 },
+{ d:"G", u:"Workplace Problems", t:"Applied", q:"A project needs 600 person-hours. With 5 people working 8 hours daily, days required:", o:["15","12","18","20"], c:0, lv:2 },
+{ d:"G", u:"Workplace Problems", t:"Applied", q:"Attrition reduced headcount from 250 to 215 in a year. The attrition rate is:", o:["14%","12%","16%","10%"], c:0, lv:2 },
+{ d:"G", u:"Financial Literacy", t:"Finance", q:"A salary of ₹60,000 has 12% deducted for provident fund. Take-home pay:", o:["₹52,800","₹54,000","₹50,400","₹53,200"], c:0, lv:1 },
+{ d:"G", u:"Financial Literacy", t:"Finance", q:"An EMI of ₹15,000 runs for 24 months on a ₹3,00,000 loan. Total interest paid:", o:["₹60,000","₹45,000","₹50,000","₹72,000"], c:0, lv:2 },
+{ d:"G", u:"Financial Literacy", t:"Finance", q:"Inflation is 6% annually. An item costing ₹1,000 today will cost approximately how much in 2 years?", o:["₹1,124","₹1,120","₹1,060","₹1,200"], c:0, lv:3 },
+{ d:"G", u:"Financial Literacy", t:"Finance", q:"A mutual fund returns 12% while inflation is 7%. The real return is approximately:", o:["5%","12%","19%","7%"], c:0, lv:2 },
+{ d:"G", u:"Statistical Interpretation", t:"Statistics", q:"The mean of 5, 10, 15, 20, 25 is:", o:["15","16","14","17"], c:0, lv:1 },
+{ d:"G", u:"Statistical Interpretation", t:"Statistics", q:"A dataset has mean 50 and median 35. The distribution is most likely:", o:["Right-skewed","Left-skewed","Symmetric","Uniform"], c:0, lv:3 },
+{ d:"G", u:"Statistical Interpretation", t:"Statistics", q:"Range of the data 12, 45, 23, 67, 34 is:", o:["55","67","45","43"], c:0, lv:1 },
+{ d:"G", u:"Statistical Interpretation", t:"Statistics", q:"If every value in a dataset increases by 10, the standard deviation:", o:["Stays the same","Increases by 10","Doubles","Decreases"], c:0, lv:3 },
+{ d:"G", u:"Decision Making", t:"Decision", q:"Supplier A charges ₹50/unit with ₹2,000 fixed cost; B charges ₹60/unit with no fixed cost. At what volume is A cheaper?", o:["Above 200 units","Above 100 units","Above 300 units","Always"], c:0, lv:3 },
+{ d:"G", u:"Decision Making", t:"Decision", q:"A product sells at ₹500 with variable cost ₹300 and fixed costs ₹40,000. Break-even quantity:", o:["200 units","150 units","250 units","180 units"], c:0, lv:3 },
+{ d:"G", u:"Decision Making", t:"Decision", q:"Plan A: ₹300/month flat. Plan B: ₹100 + ₹2 per unit. At 150 units, which is cheaper?", o:["Plan A","Plan B","Equal","Cannot determine"], c:0, lv:2 },
+
+/* ── Expansion: Domain H — Mathematical Problem Solving ─────────── */
+{ d:"H", u:"Complex Multi-step", t:"Problem Solving", q:"A boat travels 30 km downstream in 2 hours and returns in 3 hours. Speed of the stream:", o:["2.5 km/h","5 km/h","3 km/h","1.5 km/h"], c:0, lv:3 },
+{ d:"H", u:"Complex Multi-step", t:"Problem Solving", q:"Pipe A fills a tank in 20 minutes, pipe B in 30 minutes. Together they take:", o:["12 minutes","15 minutes","10 minutes","25 minutes"], c:0, lv:2 },
+{ d:"H", u:"Complex Multi-step", t:"Problem Solving", q:"A mixture of 40 litres has milk and water in ratio 3:1. Water to be added to make the ratio 3:2:", o:["10 litres","5 litres","15 litres","8 litres"], c:0, lv:3 },
+{ d:"H", u:"Complex Multi-step", t:"Problem Solving", q:"A car covers 120 km at 60 km/h and returns at 40 km/h. Average speed for the whole journey:", o:["48 km/h","50 km/h","45 km/h","52 km/h"], c:0, lv:3 },
+{ d:"H", u:"Modelling", t:"Modelling", q:"Cost C = 5,000 + 25q. The cost of producing 400 units is:", o:["₹15,000","₹12,000","₹10,000","₹18,000"], c:0, lv:1 },
+{ d:"H", u:"Modelling", t:"Modelling", q:"Profit P = 80q − 0.4q² − 1,000. Profit at q = 50:", o:["₹2,000","₹1,800","₹2,200","₹1,500"], c:0, lv:3 },
+{ d:"H", u:"Modelling", t:"Modelling", q:"A population model N = 1,000 × 1.05ᵗ describes:", o:["5% growth per period","5 added per period","5% decline","Constant population"], c:0, lv:2 },
+{ d:"H", u:"Evaluation", t:"Evaluation", q:"A calculation gives an average class age of 250 years. The most reasonable conclusion is:", o:["There is an error in the calculation","The class is very old","The data is correct","Ages were underreported"], c:0, lv:1 },
+{ d:"H", u:"Evaluation", t:"Evaluation", q:"A survey of 20 people is used to claim a national trend. The main weakness is:", o:["Sample size is too small","The questions were unclear","The maths is wrong","Nothing is wrong"], c:0, lv:2 },
+{ d:"H", u:"Evaluation", t:"Evaluation", q:"Ice cream sales and drowning deaths both rise in summer. Concluding one causes the other confuses:", o:["Correlation with causation","Mean with median","Ratio with proportion","Sample with population"], c:0, lv:2 },
+{ d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"The sum of two numbers is 25 and their difference is 7. The larger number is:", o:["16","18","15","17"], c:0, lv:2 },
+{ d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"If the perimeter of a square equals the perimeter of a rectangle 8 cm × 4 cm, the side of the square is:", o:["6 cm","5 cm","7 cm","8 cm"], c:0, lv:2 },
+{ d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"A number increased by 20% gives 96. The original number is:", o:["80","76","85","72"], c:0, lv:2 },
+{ d:"H", u:"Mathematical Reasoning", t:"Reasoning", q:"The area of a circle doubles. Its radius increases by a factor of:", o:["√2","2","4","1.5"], c:0, lv:3 },
+{ d:"H", u:"Complex Multi-step", t:"Problem Solving", q:"Three taps fill a tank in 10, 15 and 30 minutes respectively. Opened together, time to fill:", o:["5 minutes","6 minutes","4 minutes","8 minutes"], c:0, lv:3 },
+
 ];
 
 /* ── Difficulty label helper ─────────────────────────────────────── */
@@ -171,59 +312,114 @@ const diffTone  = v => v===1?"emerald":v===2?"amber":"rose";
 /* ══════════════════════════════════════════════════════════════════
    STUDENT APTITUDE PROFILE — computed from attempt items
    ══════════════════════════════════════════════════════════════════ */
+/* Difficulty weights. A flat percentage cannot separate a student who
+   cleared twenty easy items from one who cleared ten hard ones, and the
+   whole point of the bands is to locate where competence stops. Harder
+   items therefore carry more weight in both the numerator and the
+   denominator, so the score reads as "proportion of difficulty mastered"
+   rather than "proportion of questions answered". */
+const LEVEL_WEIGHT = { 1: 1, 2: 1.6, 3: 2.4 };
+
+/* A domain judged on two questions is noise. Below this many items the
+   score is reported but flagged as provisional rather than presented as
+   a proficiency finding. */
+export const RELIABLE_MIN = 6;
+
+/* Resolve any question — built-in or teacher-authored — to a domain.
+   Built-in items are matched on their exact text, which survives the
+   round trip through the database. Teacher questions are matched on
+   unit or topic against the domain vocabulary. */
+function buildDomainIndex(allQuestions) {
+  const byText = new Map();   // normalised question text -> { domain, level }
+  const byId   = new Map();   // database id              -> { domain, level }
+
+  const norm = t => String(t || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+  for (const bq of QAAPF_QUESTIONS) {
+    byText.set(norm(bq.q), { domain: bq.d, level: bq.lv });
+  }
+
+  for (const q of (allQuestions || [])) {
+    const hit = byText.get(norm(q.question));
+    if (hit) { byId.set(q.id, hit); continue; }
+
+    // Teacher-authored: match unit or topic against domain vocabulary.
+    const u = norm(q.unit), t = norm(q.topic);
+    const dom = DOMAINS.find(d => d.units.some(x => {
+      const n = norm(x);
+      return n === u || n === t || u.includes(n) || n.includes(u);
+    }));
+    if (!dom) continue;
+    const lvl = q.difficulty === "hard" ? 3 : q.difficulty === "easy" ? 1 : 2;
+    byId.set(q.id, { domain: dom.id, level: lvl });
+  }
+
+  return { byId, byText, norm };
+}
+
 export function computeQAAPFProfile(attempts, allQuestions) {
-  /* Flatten all answered items across attempts, keyed by question id */
-  const answered = {};
-  for (const att of attempts) {
+  const { byId, byText, norm } = buildDomainIndex(allQuestions);
+
+  const domainScore = {};
+  for (const d of DOMAINS) {
+    domainScore[d.id] = { wCorrect: 0, wTotal: 0, correct: 0, seen: 0, byLevel: { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } } };
+  }
+
+  /* Walk every answered item exactly once. Keying the accumulation off
+     the item itself — rather than iterating the bank and looking items
+     up — is what stops a question being counted twice when it appears
+     in both the built-in set and the teacher's bank. */
+  for (const att of attempts || []) {
     for (const it of (att.items || [])) {
-      const key = it.qid || it.question;
-      if (!answered[key]) answered[key] = { correct:0, seen:0 };
-      answered[key].seen++;
-      if (it.chosen === it.correct) answered[key].correct++;
+      const meta = byId.get(it.qid) || byText.get(norm(it.question));
+      if (!meta) continue;                       // outside the framework
+      const bucket = domainScore[meta.domain];
+      if (!bucket) continue;
+      const w  = LEVEL_WEIGHT[meta.level] || 1;
+      const ok = it.chosen === it.correct;
+      bucket.seen++; bucket.wTotal += w;
+      if (ok) { bucket.correct++; bucket.wCorrect += w; }
+      const lv = bucket.byLevel[meta.level];
+      if (lv) { lv.n++; if (ok) lv.c++; }
     }
   }
 
-  /* Map to domain scores */
-  const domainScore = {};
-  for (const dom of DOMAINS) domainScore[dom.id] = { correct:0, total:0 };
-
-  /* Check built-in QAAPF bank first */
-  for (const bq of QAAPF_QUESTIONS) {
-    const key = bq.q;
-    const rec = answered[key];
-    if (!rec) continue;
-    domainScore[bq.d].correct += rec.correct;
-    domainScore[bq.d].total   += rec.seen;
-  }
-
-  /* Also check question bank questions tagged with domain units */
-  for (const q of (allQuestions || [])) {
-    const rec = answered[q.id] || answered[q.question];
-    if (!rec) continue;
-    const dom = DOMAINS.find(d => d.units.some(u =>
-      u.toLowerCase() === (q.unit||"").toLowerCase() ||
-      u.toLowerCase() === (q.topic||"").toLowerCase()
-    ));
-    if (!dom) continue;
-    domainScore[dom.id].correct += rec.correct;
-    domainScore[dom.id].total   += rec.seen;
-  }
-
   const domainProfiles = DOMAINS.map(dom => {
-    const { correct, total } = domainScore[dom.id];
-    const pct = total ? Math.round((correct/total)*100) : null;
-    return { ...dom, correct, total, pct, level: pct !== null ? getQLevel(pct) : null };
+    const b = domainScore[dom.id];
+    const pct = b.wTotal ? Math.round((b.wCorrect / b.wTotal) * 100) : null;
+    return {
+      ...dom,
+      correct: b.correct,
+      total:   b.seen,
+      pct,
+      level:    pct !== null ? getQLevel(pct) : null,
+      reliable: b.seen >= RELIABLE_MIN,
+      byLevel:  b.byLevel,
+      /* Where competence stops: the hardest tier the student still
+         clears at 60% or better. This is the diagnostic claim the
+         bands are meant to support. */
+      ceiling: [3, 2, 1].find(l => b.byLevel[l].n >= 2 && b.byLevel[l].c / b.byLevel[l].n >= 0.6) || null,
+    };
   });
 
-  const totalCorrect = Object.values(domainScore).reduce((s,v)=>s+v.correct,0);
-  const totalSeen    = Object.values(domainScore).reduce((s,v)=>s+v.total,0);
-  const overallPct   = totalSeen ? Math.round((totalCorrect/totalSeen)*100) : null;
+  const wCorrect = Object.values(domainScore).reduce((s, v) => s + v.wCorrect, 0);
+  const wTotal   = Object.values(domainScore).reduce((s, v) => s + v.wTotal, 0);
+  const seen     = Object.values(domainScore).reduce((s, v) => s + v.seen, 0);
+  const correct  = Object.values(domainScore).reduce((s, v) => s + v.correct, 0);
+
+  const overallPct   = wTotal ? Math.round((wCorrect / wTotal) * 100) : null;
   const overallLevel = overallPct !== null ? getQLevel(overallPct) : null;
 
-  const strengths = domainProfiles.filter(d => d.pct !== null && d.pct >= 70).sort((a,b)=>b.pct-a.pct).slice(0,3);
-  const gaps      = domainProfiles.filter(d => d.pct !== null && d.pct <  60).sort((a,b)=>a.pct-b.pct).slice(0,3);
+  const assessed  = domainProfiles.filter(d => d.pct !== null);
+  const strengths = assessed.filter(d => d.pct >= 70).sort((a, b) => b.pct - a.pct).slice(0, 3);
+  const gaps      = assessed.filter(d => d.pct <  60).sort((a, b) => a.pct - b.pct).slice(0, 3);
 
-  return { domainProfiles, overallPct, overallLevel, strengths, gaps, totalSeen, totalCorrect };
+  return {
+    domainProfiles, overallPct, overallLevel, strengths, gaps,
+    totalSeen: seen, totalCorrect: correct,
+    coverage: assessed.length,                 // domains with any evidence
+    reliable: seen >= RELIABLE_MIN * 2,
+  };
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -379,16 +575,37 @@ function StudentProfileCard({ student: s }) {
         </div>
         {lvl && <div className={`rounded-2xl border px-4 py-2 text-center ${lvl.light}`}><div className="text-xl font-extrabold">{lvl.level}</div><div className="text-xs font-semibold">{lvl.label}</div></div>}
       </div>
-      <p className="text-xs text-slate-600 mb-4 leading-relaxed">{lvl?.desc}</p>
+      <p className="text-xs text-slate-600 mb-3 leading-relaxed">{lvl?.desc}</p>
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="rounded-lg bg-slate-50 border border-slate-100 px-2 py-1 text-slate-500">
+          {s.profile.totalCorrect}/{s.profile.totalSeen} correct · {s.profile.coverage}/8 domains assessed
+        </span>
+        {!s.profile.reliable && (
+          <span className="rounded-lg bg-amber-50 border border-amber-200 px-2 py-1 font-semibold text-amber-700">
+            Provisional — too few items for a firm placement
+          </span>
+        )}
+      </div>
 
       {/* Domain bars */}
       <div className="space-y-3">
         {s.profile.domainProfiles.map(d => (
           <div key={d.id}>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs font-semibold text-slate-700">{d.icon} {d.name}</span>
+              <span className="text-xs font-semibold text-slate-700">
+                {d.icon} {d.name}
+                {d.pct !== null && !d.reliable && (
+                  <span className="ml-1.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 text-[9px] font-normal text-slate-400" title={`Based on only ${d.total} question${d.total===1?"":"s"} — treat as provisional`}>
+                    provisional · {d.total}Q
+                  </span>
+                )}
+              </span>
               {d.pct !== null
-                ? <div className="flex items-center gap-2"><span className={`${num} text-xs font-bold ${d.pct>=70?"text-emerald-600":d.pct>=50?"text-amber-600":"text-rose-600"}`}>{d.pct}%</span><span className={`text-[10px] font-bold rounded-full border px-1.5 py-0.5 ${d.level?.light}`}>{d.level?.level}</span></div>
+                ? <div className="flex items-center gap-2">
+                    {d.ceiling && <span className="text-[9px] text-slate-400">clears {diffLabel(d.ceiling).toLowerCase()}</span>}
+                    <span className={`${num} text-xs font-bold ${d.pct>=70?"text-emerald-600":d.pct>=50?"text-amber-600":"text-rose-600"}`}>{d.pct}%</span>
+                    <span className={`text-[10px] font-bold rounded-full border px-1.5 py-0.5 ${d.level?.light}`}>{d.level?.level}</span>
+                  </div>
                 : <span className="text-[10px] text-slate-300">Not assessed</span>}
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
@@ -484,7 +701,20 @@ function LevelsGuide() {
     <div className="space-y-4">
       <div className={`${card} p-5`}>
         <h3 className="text-sm font-bold text-slate-900 mb-1">How QAAPF levels map to CEFR</h3>
-        <p className="text-xs text-slate-500 mb-4">QAAPF is an institutional diagnostic framework grounded in OECD PIAAC Numeracy and PISA Mathematics. The mapping to CEFR is structural — not that Q3 = B1 internationally, but that the 6-band progression mirrors CEFR's logic.</p>
+        <p className="text-xs text-slate-500 mb-3">QAAPF is an institutional diagnostic framework grounded in OECD PIAAC Numeracy and PISA Mathematics. The mapping to CEFR is structural — not that Q3 = B1 internationally, but that the 6-band progression mirrors CEFR's logic.</p>
+        <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-[11px] font-bold text-slate-700 mb-1">How the score is calculated</p>
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Items are weighted by difficulty — easy ×1, medium ×1.6, hard ×2.4 — in both the numerator and the denominator.
+            A flat percentage cannot separate a student who cleared twenty easy items from one who cleared ten hard ones,
+            and locating where competence stops is the entire purpose of the bands. The reported figure is therefore the
+            proportion of <em>difficulty</em> mastered, not the proportion of questions answered.
+          </p>
+          <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
+            A domain with fewer than {RELIABLE_MIN} answered items is marked <strong>provisional</strong>. The score is still
+            shown, but it should not be read as a proficiency finding until the student has sat more questions in that domain.
+          </p>
+        </div>
         <div className="grid gap-3">
           {Q_LEVELS.map((ql, i) => (
             <div key={ql.level} className={`flex items-start gap-4 rounded-xl border p-4 ${ql.light}`}>
