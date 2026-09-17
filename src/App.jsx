@@ -21,6 +21,7 @@ import { parseWorkbook, downloadTemplate } from "./lib/xlsx-import";
 import { downloadCSV } from "./lib/csv";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
+import QAAPFPanel, { computeQAAPFProfile, Q_LEVELS, getQLevel } from "./components/QAAPF.jsx";
 import AdminPanel from "./components/AdminPanel";
 import ClassroomManager from "./components/Classrooms";
 import {
@@ -1841,7 +1842,9 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
 
       {/* QAAPF mini-profile for student */}
       {myAll.length > 0 && (() => {
-        const profile = computeQAAPFProfile(myAll, questions);
+        let profile;
+        try { profile = computeQAAPFProfile(myAll, questions); }
+        catch (e) { console.error("QAAPF profile failed:", e); return null; }
         if (profile.overallPct === null) return null;
         const lvl = profile.overallLevel;
         return (
