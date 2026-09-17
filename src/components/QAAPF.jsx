@@ -721,6 +721,36 @@ function Dashboard({ attempts, questions, quizzes, classrooms }) {
     ...DOMAINS.map(d=>({ label:d.short, value:s=>s.profile.domainProfiles.find(p=>p.id===d.id)?.pct??0 })),
   ]);
 
+  /* Intervention grouping — the single most actionable output of a
+     diagnostic. For each domain, who scored below 50%? These are the
+     students to pull into a targeted remediation group. A domain with a
+     large group is a whole-class teaching gap, not an individual one. */
+  const interventionGroups = useMemo(() => {
+    return DOMAINS.map(d => {
+      const need = students.filter(s => {
+        const dp = s.profile.domainProfiles.find(p => p.id === d.id);
+        return dp && dp.pct !== null && dp.pct < 50;
+      }).sort((a, b) => {
+        const pa = a.profile.domainProfiles.find(p=>p.id===d.id)?.pct ?? 0;
+        const pb = b.profile.domainProfiles.find(p=>p.id===d.id)?.pct ?? 0;
+        return pa - pb;
+      });
+      const assessed = students.filter(s => {
+        const dp = s.profile.domainProfiles.find(p => p.id === d.id);
+        return dp && dp.pct !== null;
+      }).length;
+      return { domain: d, need, assessed, share: assessed ? Math.round(need.length/assessed*100) : 0 };
+    }).filter(g => g.need.length > 0).sort((a, b) => b.need.length - a.need.length);
+  }, [students]);
+
+  const exportGroup = (g) => downloadCSV(`remediation-${g.domain.short}.csv`, g.need, [
+    { label:"Name",   value:s=>s.name },
+    { label:"Course", value:s=>s.course },
+    { label:"CU ID",  value:s=>s.cu_id },
+    { label:`${g.domain.name} %`, value:s=>s.profile.domainProfiles.find(p=>p.id===g.domain.id)?.pct??0 },
+    { label:"Overall band", value:s=>s.profile.overallLevel?.level||"—" },
+  ]);
+
   return (
     <div className="space-y-5">
       {/* Band summary */}
@@ -740,6 +770,48 @@ function Dashboard({ attempts, questions, quizzes, classrooms }) {
         </div>
         {!students.length && <Empty icon={Users} title="No student data yet" hint="Students need to complete QAAPF diagnostic quizzes first."/>}
       </div>
+
+      {/* Intervention groups — who to pull for remediation, by domain */}
+      {interventionGroups.length > 0 && (
+        <div className={`${card} p-5`}>
+          <div className="mb-1 flex items-center gap-2">
+            <Layers size={15} className="text-violet-600"/>
+            <h3 className="text-sm font-bold text-slate-900">Suggested remediation groups</h3>
+          </div>
+          <p className="mb-4 text-xs text-slate-400">Students below 50% in each domain. A large group signals a whole-class gap worth reteaching; a small one, targeted support.</p>
+          <div className="grid gap-3 md:grid-cols-2">
+            {interventionGroups.map(g => (
+              <div key={g.domain.id} className="rounded-xl border border-slate-200 p-4">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{g.domain.icon}</span>
+                    <span className="text-sm font-bold text-slate-800">{g.domain.name}</span>
+                  </div>
+                  <button onClick={() => exportGroup(g)} className={`${btnG} !py-1 !px-2 !text-[11px]`}><FileDown size={11}/> List</button>
+                </div>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className={`rounded-lg px-2 py-0.5 text-xs font-bold ${g.share>=50?"bg-rose-100 text-rose-700":g.share>=25?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600"}`}>
+                    {g.need.length} of {g.assessed} students · {g.share}%
+                  </span>
+                  {g.share >= 50 && <span className="text-[10px] font-semibold text-rose-600">whole-class gap</span>}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {g.need.slice(0, 12).map(s => {
+                    const pct = s.profile.domainProfiles.find(p=>p.id===g.domain.id)?.pct ?? 0;
+                    return (
+                      <span key={s.id} className="inline-flex items-center gap-1 rounded-lg bg-slate-50 border border-slate-100 px-2 py-1 text-[11px] text-slate-600">
+                        {s.name}
+                        <span className={`font-bold ${pct<30?"text-rose-600":"text-amber-600"}`}>{pct}%</span>
+                      </span>
+                    );
+                  })}
+                  {g.need.length > 12 && <span className="self-center text-[11px] text-slate-400">+{g.need.length - 12} more</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Student table */}
       {students.length > 0 && (
@@ -789,6 +861,76 @@ function Dashboard({ attempts, questions, quizzes, classrooms }) {
   );
 }
 
+/* A one-page printable report a teacher can hand or email to a student.
+   Same design language as the exam paper printer — a clean print window,
+   no dependency — because a proficiency band means nothing to a student
+   without the domain breakdown and a concrete "work on this" list. */
+function printStudentReport(s) {
+  const p = s.profile;
+  const lvl = p.overallLevel;
+  const esc = t => String(t ?? "").replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+  const w = window.open("", "_blank");
+  if (!w) { alert("Allow pop-ups to print the report."); return; }
+
+  const domainRows = p.domainProfiles.map(d => {
+    const val = d.pct === null ? "—" : `${d.pct}%`;
+    const band = d.level ? d.level.level : "—";
+    const bar = d.pct === null ? "" : `<div class="bar"><div class="fill ${d.pct>=70?"g":d.pct>=50?"a":"r"}" style="width:${d.pct}%"></div></div>`;
+    const note = d.pct === null ? "not assessed" : !d.reliable ? `provisional (${d.total} items)` : d.ceiling ? `clears ${["","easy","medium","hard"][d.ceiling]}` : "";
+    return `<tr><td>${d.icon} ${esc(d.name)}</td><td class="v">${val}</td><td>${band}</td><td class="barcell">${bar}</td><td class="note">${note}</td></tr>`;
+  }).join("");
+
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(s.name)} — Aptitude Report</title><style>
+    @page { margin: 18mm; }
+    * { box-sizing: border-box; }
+    body { font: 11pt/1.5 Georgia, serif; color: #111; margin: 0; }
+    header { border-bottom: 2px solid #111; padding-bottom: 10px; margin-bottom: 16px; display:flex; justify-content:space-between; align-items:flex-end; }
+    h1 { font-size: 17pt; margin: 0 0 2px; }
+    .sub { font-size: 9.5pt; color: #555; }
+    .band { text-align:center; border:2px solid #333; border-radius:10px; padding:6px 14px; }
+    .band .lv { font-size: 20pt; font-weight: 800; }
+    .band .lb { font-size: 9pt; }
+    .desc { font-size: 10pt; color:#333; margin: 4px 0 16px; font-style: italic; }
+    table { width:100%; border-collapse: collapse; font-size: 10pt; }
+    th { text-align:left; border-bottom:1px solid #999; padding:5px 6px; font-size:8.5pt; text-transform:uppercase; letter-spacing:.04em; color:#555; }
+    td { padding:6px; border-bottom:1px solid #eee; vertical-align: middle; }
+    td.v { font-weight:700; text-align:right; width:48px; }
+    td.barcell { width: 140px; }
+    td.note { font-size:8.5pt; color:#666; }
+    .bar { height:8px; background:#eee; border-radius:4px; overflow:hidden; }
+    .fill { height:100%; }
+    .fill.g { background:#059669; } .fill.a { background:#d97706; } .fill.r { background:#dc2626; }
+    .cols { display:flex; gap:16px; margin-top:18px; }
+    .box { flex:1; border:1px solid #ccc; border-radius:8px; padding:10px 12px; }
+    .box h3 { font-size:10pt; margin:0 0 6px; }
+    .box p { font-size:9.5pt; margin:2px 0; }
+    .plan { margin-top:16px; border:1px solid #333; border-radius:8px; padding:12px; }
+    .plan h3 { margin:0 0 6px; font-size:10.5pt; }
+    footer { margin-top:22px; border-top:1px solid #bbb; padding-top:7px; font-size:8pt; color:#666; text-align:center; }
+  </style></head><body>
+    <header>
+      <div>
+        <h1>${esc(s.name)}</h1>
+        <div class="sub">${esc(s.course || "")} ${s.cu_id ? "· " + esc(s.cu_id) : ""} · ${p.totalSeen} questions attempted across ${p.coverage}/8 domains</div>
+      </div>
+      ${lvl ? `<div class="band"><div class="lv">${lvl.level}</div><div class="lb">${esc(lvl.label)}</div></div>` : ""}
+    </header>
+    ${lvl ? `<div class="desc">${esc(lvl.desc)}</div>` : ""}
+    <table>
+      <thead><tr><th>Domain</th><th style="text-align:right">Score</th><th>Band</th><th>Profile</th><th>Note</th></tr></thead>
+      <tbody>${domainRows}</tbody>
+    </table>
+    <div class="cols">
+      <div class="box"><h3>Strengths</h3>${p.strengths.length ? p.strengths.map(d=>`<p>${d.icon} ${esc(d.name)} — ${d.pct}%</p>`).join("") : "<p>—</p>"}</div>
+      <div class="box"><h3>Development gaps</h3>${p.gaps.length ? p.gaps.map(d=>`<p>${d.icon} ${esc(d.name)} — ${d.pct}%</p>`).join("") : "<p>—</p>"}</div>
+    </div>
+    ${p.gaps.length ? `<div class="plan"><h3>Suggested focus</h3><p style="font-size:9.5pt;margin:0">Prioritise ${p.gaps.map(d=>esc(d.name)).join(", ")}. Work from the easiest unanswered items upward before attempting harder application questions in these domains.</p></div>` : ""}
+    <footer>QuizPro · QAAPF diagnostic · generated ${new Date().toLocaleDateString()} · ${p.reliable ? "" : "PROVISIONAL — based on limited items, retest for a firm placement"}</footer>
+  </body></html>`);
+  w.document.close(); w.focus();
+  setTimeout(() => w.print(), 350);
+}
+
 function StudentProfileCard({ student: s }) {
   const lvl = s.profile.overallLevel;
   return (
@@ -798,7 +940,10 @@ function StudentProfileCard({ student: s }) {
           <h3 className="text-base font-extrabold text-slate-900">{s.name}</h3>
           <p className="text-xs text-slate-500">{s.course} · {s.cu_id} · {s.attempts.length} attempt{s.attempts.length!==1?"s":""}</p>
         </div>
-        {lvl && <div className={`rounded-2xl border px-4 py-2 text-center ${lvl.light}`}><div className="text-xl font-extrabold">{lvl.level}</div><div className="text-xs font-semibold">{lvl.label}</div></div>}
+        <div className="flex items-center gap-2">
+          <button onClick={() => printStudentReport(s)} className={`${btnG} !py-1.5 !px-3 !text-xs`}><FileDown size={13}/> Report</button>
+          {lvl && <div className={`rounded-2xl border px-4 py-2 text-center ${lvl.light}`}><div className="text-xl font-extrabold">{lvl.level}</div><div className="text-xs font-semibold">{lvl.label}</div></div>}
+        </div>
       </div>
       <p className="text-xs text-slate-600 mb-3 leading-relaxed">{lvl?.desc}</p>
       <div className="mb-4 flex flex-wrap items-center gap-2 text-[11px]">

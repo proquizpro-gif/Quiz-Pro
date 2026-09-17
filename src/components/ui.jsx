@@ -54,10 +54,27 @@ export const buildLeaderboard = (attempts, profiles) => {
     byUser[a.user_id].attempts.push(a);
   }
   return Object.entries(byUser).map(([userId, { attempts: ua }]) => {
-    const best = ua.reduce((b, a) => a.percent > b.percent ? a : b);
-    const avg  = Math.round(ua.reduce((s, a) => s + (a.percent || 0), 0) / ua.length);
+    /* Count the BEST attempt per quiz, not every attempt. Averaging all
+       attempts blends a retake's lower first try into the mean, which
+       both understates a student who improved and contradicts the
+       "best attempt counted per quiz" the UI promises. Collapse to one
+       row per quiz first, keeping the highest percent, then average. */
+    const bestPerQuiz = {};
+    for (const a of ua) {
+      const q = a.quiz_id;
+      if (!bestPerQuiz[q] || (a.percent ?? 0) > (bestPerQuiz[q].percent ?? 0)) bestPerQuiz[q] = a;
+    }
+    const perQuiz = Object.values(bestPerQuiz);
+    const best = perQuiz.reduce((b, a) => (a.percent ?? 0) > (b.percent ?? 0) ? a : b);
+    const avg  = Math.round(perQuiz.reduce((s, a) => s + (a.percent || 0), 0) / perQuiz.length);
     const name = best.student_name || profiles?.find(p => p.id === userId)?.full_name || "Unknown";
-    return { user_id: userId, student: name, best: best.percent || 0, avg: avg || 0, violations: ua.reduce((s, a) => s + (a.violations || 0), 0), profile: profiles?.find(p => p.id === userId) || null };
+    return {
+      user_id: userId, student: name,
+      best: best.percent || 0, avg: avg || 0,
+      n: perQuiz.length,                                   // distinct quizzes taken
+      violations: ua.reduce((s, a) => s + (a.violations || 0), 0),
+      profile: profiles?.find(p => p.id === userId) || null,
+    };
   }).sort((a, b) => b.avg - a.avg);
 };
 
