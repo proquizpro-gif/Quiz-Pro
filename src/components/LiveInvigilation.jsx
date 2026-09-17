@@ -26,7 +26,23 @@ function fmtClock(sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export default function LiveInvigilation({ quiz }) {
+export default function LiveInvigilation({ quiz, attempts = [] }) {
+  /* live_sessions never stores a score — it can't, the grade does not
+     exist until the attempt lands. A submitted row is joined to its
+     attempt by user_id so the score a student actually earned shows up
+     here instead of just the word "Submitted". Keyed once per render
+     rather than per row so 60 students does not mean 60 linear scans. */
+  const attemptByUser = useMemo(() => {
+    const m = new Map();
+    for (const a of attempts) {
+      // Keep the best score if a student has more than one attempt on
+      // this quiz — that is what the student themself sees as "my score".
+      const prev = m.get(a.user_id);
+      if (!prev || (a.percent ?? 0) > (prev.percent ?? 0)) m.set(a.user_id, a);
+    }
+    return m;
+  }, [attempts]);
+
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow]         = useState(Date.now());
@@ -85,6 +101,15 @@ export default function LiveInvigilation({ quiz }) {
     };
   }, [rows, now]);
 
+  const gradedSoFar = useMemo(() => {
+    const scores = submitted
+      .map(r => attemptByUser.get(r.user_id)?.percent)
+      .filter(p => p !== undefined && p !== null);
+    if (!scores.length) return null;
+    return Math.round(scores.reduce((s, p) => s + p, 0) / scores.length);
+  }, [submitted, attemptByUser]);
+
+
   const refresh = async () => {
     setLoading(true);
     const data = await fetchLiveSessions(quiz.id);
@@ -135,7 +160,7 @@ export default function LiveInvigilation({ quiz }) {
             <thead className="sticky top-0 bg-slate-50 text-slate-500">
               <tr>
                 <th className="px-4 py-2.5 text-left font-semibold">Student</th>
-                <th className="px-3 py-2.5 text-left font-semibold">Progress</th>
+                <th className="px-3 py-2.5 text-left font-semibold">Progress / Score</th>
                 <th className="px-3 py-2.5 text-center font-semibold">Time left</th>
                 <th className="px-3 py-2.5 text-center font-semibold">Flags</th>
                 <th className="px-4 py-2.5 text-left font-semibold hidden md:table-cell">Last event</th>
@@ -148,6 +173,7 @@ export default function LiveInvigilation({ quiz }) {
                 const gone    = r.status === "abandoned";
                 const pct     = r.total ? Math.round((r.answered / r.total) * 100) : 0;
                 const v       = r.violations || 0;
+                const attempt = done ? attemptByUser.get(r.user_id) : null;
                 return (
                   <tr key={r.id} className={v >= 3 ? "bg-rose-50/50" : done ? "bg-emerald-50/30" : ""}>
                     <td className="px-4 py-2.5">
@@ -163,7 +189,21 @@ export default function LiveInvigilation({ quiz }) {
                     </td>
                     <td className="px-3 py-2.5">
                       {done
-                        ? <span className="flex items-center gap-1 font-semibold text-emerald-600"><CheckCircle2 size={12}/> Submitted</span>
+                        ? (
+                          <span className="flex items-center gap-2">
+                            <CheckCircle2 size={12} className="shrink-0 text-emerald-600"/>
+                            {attempt
+                              ? <span className={`${num} font-bold ${attempt.percent >= 60 ? "text-emerald-600" : attempt.percent >= 40 ? "text-amber-600" : "text-rose-600"}`}>
+                                  {attempt.percent}% <span className="font-normal text-slate-400">({attempt.score}/{attempt.max_score})</span>
+                                </span>
+                              /* The submit-then-refetch race: live_sessions flips to
+                                 "submitted" the instant the student's browser reports
+                                 it, which can arrive a beat before the graded attempt
+                                 row does. Say so plainly rather than showing a blank
+                                 cell that reads as a bug. */
+                              : <span className="text-slate-400">Submitted · grading…</span>}
+                          </span>
+                        )
                         : gone
                           ? <span className="flex items-center gap-1 text-slate-400"><WifiOff size={12}/> Left the exam</span>
                           : (
@@ -200,7 +240,7 @@ export default function LiveInvigilation({ quiz }) {
       {rows.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 px-5 py-2.5 text-[11px] text-slate-400">
           <span>{active.length} active</span>
-          <span>{submitted.length} submitted</span>
+          <span>{submitted.length} submitted{gradedSoFar !== null ? ` · avg ${gradedSoFar}%` : ""}</span>
           {stale.length > 0 && <span className="text-amber-600">{stale.length} not responding</span>}
           <span className="ml-auto">
             {connected ? "Live — updates as they happen" : "Polling every 15s"}

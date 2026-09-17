@@ -1486,7 +1486,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
         </div>
       </div>
 
-      <LiveInvigilation quiz={quiz}/>
+      <LiveInvigilation quiz={quiz} attempts={at}/>
 
       {/* Fix 3: Quiz link card */}
       <div className={`${card} border-violet-100 bg-violet-50/40 p-4 flex flex-wrap items-center gap-3`}>
