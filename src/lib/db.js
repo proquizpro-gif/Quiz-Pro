@@ -81,6 +81,15 @@ export async function deleteQuestion(id) {
   if (error) throw error;
 }
 
+/* Batched rather than a loop of single deletes: one round trip instead
+   of N, and it either removes the whole selection or none of it rather
+   than leaving a partially-cleared bank if the connection drops midway. */
+export async function deleteQuestions(ids) {
+  if (!ids?.length) return;
+  const { error } = await supabase.from("questions").delete().in("id", ids);
+  if (error) throw error;
+}
+
 /* ── Quizzes ────────────────────────────────────────────────────── */
 export async function fetchQuizzes() {
   const { data, error } = await supabase.from("quizzes").select("*").order("week", { ascending: true });

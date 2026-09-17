@@ -11,7 +11,7 @@ import {
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { configMissing } from "./lib/supabase";
 import {
-  fetchQuestions, insertQuestion, insertQuestions, deleteQuestion,
+  fetchQuestions, insertQuestion, insertQuestions, updateQuestion, deleteQuestion, deleteQuestions,
   fetchQuizzes, insertQuiz, updateQuiz, deleteQuiz,
   fetchAttempts, fetchMyAttempts, insertAttempt,
   fetchMyClassrooms, joinClassroomByCode, leaveClassroomAsStudent,
@@ -372,22 +372,39 @@ function WeekBarChart({ data }) {
 /* ── Question Bank ────────────────────────────────────────────────── */
 function QuestionBank({ questions, setQuestions }) {
   const [q, setQ]             = useState("");
+  const [subjectFilter, setSF] = useState("all");
   const [unitFilter, setUF]   = useState("all");
   const [preview, setPreview] = useState(null);
   const [adding, setAdding]   = useState(false);
+  const [editing, setEditing] = useState(null);   // question being edited, or null
+  const [selected, setSelected] = useState(() => new Set());
   const [toast, setToast]     = useState(null);
   const fileRef = useRef(null);
   const { user, profile } = useAuth();
-  const units   = useMemo(() => Array.from(new Set(questions.map(x => x.unit))), [questions]);
+
+  const subjects = useMemo(() => Array.from(new Set(questions.map(x => x.subject || "").filter(Boolean))).sort(), [questions]);
+  const units    = useMemo(() => {
+    const src = subjectFilter === "all" ? questions : questions.filter(x => (x.subject || "") === subjectFilter);
+    return Array.from(new Set(src.map(x => x.unit))).sort();
+  }, [questions, subjectFilter]);
 
   const filtered = useMemo(() => questions.filter(x =>
+    (subjectFilter === "all" || (x.subject || "") === subjectFilter) &&
     (unitFilter === "all" || x.unit === unitFilter) &&
     (q.trim() === "" || x.question.toLowerCase().includes(q.toLowerCase()) || (x.topic||"").toLowerCase().includes(q.toLowerCase()))
-  ), [questions, unitFilter, q]);
+  ), [questions, subjectFilter, unitFilter, q]);
+
+  // Reset a stale unit filter when the subject changes out from under it.
+  useEffect(() => { if (unitFilter !== "all" && !units.includes(unitFilter)) setUF("all"); }, [units]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const grouped = useMemo(() => {
     const g = {};
-    filtered.forEach(x => { g[x.unit] = g[x.unit] || []; g[x.unit].push(x); });
+    filtered.forEach(x => {
+      const s = x.subject || "(no subject)";
+      g[s] = g[s] || {};
+      g[s][x.unit] = g[s][x.unit] || [];
+      g[s][x.unit].push(x);
+    });
     return g;
   }, [filtered]);
 
@@ -417,10 +434,55 @@ function QuestionBank({ questions, setQuestions }) {
     try {
       await deleteQuestion(id);
       setQuestions(prev => prev.filter(x => x.id !== id));
+      setSelected(s => { if (!s.has(id)) return s; const n = new Set(s); n.delete(id); return n; });
       toast2("Question removed.", "amber");
       logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "question.delete", target: target?.question?.slice(0, 60), meta: {} });
     } catch (err) { toast2(err.message, "rose"); }
   };
+
+  // ── Bulk selection ────────────────────────────────────────────
+  const toggleOne = id => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAllVisible = () => setSelected(s => {
+    const ids = filtered.map(x => x.id);
+    const allSelected = ids.length > 0 && ids.every(id => s.has(id));
+    if (allSelected) return new Set([...s].filter(id => !ids.includes(id)));
+    return new Set([...s, ...ids]);
+  });
+  const allVisibleSelected = filtered.length > 0 && filtered.every(x => selected.has(x.id));
+
+  const bulkDelete = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!window.confirm(`Delete ${ids.length} question${ids.length===1?"":"s"}? This cannot be undone. Any quiz already using them keeps the copy each student answered — only future quizzes lose access to these questions.`)) return;
+    try {
+      await deleteQuestions(ids);
+      setQuestions(prev => prev.filter(x => !selected.has(x.id)));
+      logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "question.bulk_delete", target: `${ids.length} questions`, meta: { ids } });
+      setSelected(new Set());
+      toast2(`Deleted ${ids.length} question${ids.length===1?"":"s"}.`, "amber");
+    } catch (err) { toast2(err.message, "rose"); }
+  };
+
+  // ── Fast answer-key repair ──────────────────────────────────────
+  // Clicking any option marks it correct immediately — no modal, no
+  // re-typing the question. This exists specifically for the situation
+  // where a bulk import mapped answer keys wrong: it lets a professor
+  // walk down a flagged list and fix each one in a single click.
+  const reassignCorrect = async (question, newCorrectIdx) => {
+    if (question.correct === newCorrectIdx) return;
+    const prevCorrect = question.correct;
+    setQuestions(prev => prev.map(x => x.id === question.id ? { ...x, correct: newCorrectIdx } : x));
+    try {
+      await updateQuestion(question.id, { correct: newCorrectIdx });
+      toast2(`Correct answer updated to "${question.options[newCorrectIdx]}".`);
+      logAudit({ actor_id: user.id, actor_name: profile.full_name, action: "question.fix_answer", target: question.question.slice(0,60), meta: { from: prevCorrect, to: newCorrectIdx } });
+    } catch (err) {
+      setQuestions(prev => prev.map(x => x.id === question.id ? { ...x, correct: prevCorrect } : x));
+      toast2(err.message, "rose");
+    }
+  };
+
+  const selectedCount = selected.size;
 
   return (
     <div className="space-y-5">
@@ -431,7 +493,7 @@ function QuestionBank({ questions, setQuestions }) {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><FileSpreadsheet size={16} className="text-violet-600"/> Bulk upload</h3>
-              <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-500">Upload an .xlsx. Column names matched flexibly. Every row reviewed before saving.</p>
+              <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-500">Upload an .xlsx. Column names matched flexibly. Every row reviewed before saving. Answer key accepts a letter (A–D) or a 0-indexed number.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button className={btnG} onClick={downloadTemplate}><Download size={15}/> Template</button>
@@ -449,51 +511,173 @@ function QuestionBank({ questions, setQuestions }) {
           <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"/>
           <input className={`${inp} pl-10`} placeholder="Search questions or topics..." value={q} onChange={e=>setQ(e.target.value)}/>
         </div>
+        <select className={`${inp} max-w-[180px]`} value={subjectFilter} onChange={e=>setSF(e.target.value)}>
+          <option value="all">All subjects ({questions.length})</option>
+          {subjects.map(s => <option key={s} value={s}>{s} ({questions.filter(x=>(x.subject||"")===s).length})</option>)}
+        </select>
         <select className={`${inp} max-w-[180px]`} value={unitFilter} onChange={e=>setUF(e.target.value)}>
-          <option value="all">All units ({questions.length})</option>
-          {units.map(u => <option key={u} value={u}>{u} ({questions.filter(x=>x.unit===u).length})</option>)}
+          <option value="all">All units ({subjectFilter==="all" ? questions.length : questions.filter(x=>(x.subject||"")===subjectFilter).length})</option>
+          {units.map(u => <option key={u} value={u}>{u} ({questions.filter(x=>x.unit===u && (subjectFilter==="all"||(x.subject||"")===subjectFilter)).length})</option>)}
         </select>
         <button className={btnG} onClick={() => setAdding(v=>!v)}><Plus size={15}/> {adding?"Cancel":"Add question"}</button>
       </div>
 
-      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} subjects={subjects} units={units} onDone={() => setAdding(false)} onSuccess={msg => toast2(msg)}/>}
+      {filtered.length > 0 && (
+        <div className={`${card} flex flex-wrap items-center justify-between gap-3 px-4 py-2.5`}>
+          <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} className="h-4 w-4 accent-violet-600"/>
+            {selectedCount > 0 ? `${selectedCount} selected` : `Select all ${filtered.length} shown`}
+          </label>
+          {selectedCount > 0 && (
+            <div className="flex items-center gap-2">
+              <button className={`${btnG} !py-1.5 !px-3 !text-xs`} onClick={() => setSelected(new Set())}>Clear</button>
+              <button className={`${btn} !py-1.5 !px-3 !text-xs border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100`} onClick={bulkDelete}>
+                <Trash2 size={13}/> Delete {selectedCount}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-      <div className="space-y-4">
+      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} subjects={subjects} units={units} onDone={() => setAdding(false)} onSuccess={msg => toast2(msg)}/>}
+      {editing && (
+        <EditQuestionModal
+          question={editing}
+          subjects={subjects}
+          units={units}
+          onClose={() => setEditing(null)}
+          onSaved={(updated) => { setQuestions(prev => prev.map(x => x.id === updated.id ? updated : x)); setEditing(null); toast2("Question updated."); }}
+          onError={(msg) => toast2(msg, "rose")}
+        />
+      )}
+
+      <div className="space-y-6">
         {!filtered.length
           ? <Empty icon={BookOpen} title="No questions match" hint="Adjust the filter, upload a file, or add manually."/>
-          : Object.entries(grouped).map(([unit, qs]) => (
-            <div key={unit}>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{unit}</span>
-                <span className={`${num} text-xs text-slate-300`}>({qs.length})</span>
+          : Object.entries(grouped).map(([subject, unitMap]) => (
+            <div key={subject}>
+              <div className="mb-2 flex items-center gap-2 border-b border-slate-100 pb-1.5">
+                <GraduationCap size={14} className="text-violet-500"/>
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">{subject}</span>
+                <span className={`${num} text-xs text-slate-300`}>({Object.values(unitMap).reduce((n,arr)=>n+arr.length,0)})</span>
               </div>
-              <div className="space-y-2">
-                {qs.map(x => (
-                  <div key={x.id} className={`${cardH} p-4`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge tone="violet">{x.unit}</Badge>
-                          <Badge tone="slate">{x.topic}</Badge>
-                          <Badge tone="slate">{x.points} pt</Badge>
-                        </div>
-                        <p className="mt-2 text-sm font-semibold text-slate-800">{x.question}</p>
-                        <div className="mt-2 grid gap-1 sm:grid-cols-2">
-                          {x.options.map((o, i) => (
-                            <div key={i} className={`flex items-center gap-2 text-xs ${i===x.correct?"font-semibold text-emerald-700":"text-slate-400"}`}>
-                              {i===x.correct?<CheckCircle2 size={12}/>:<Circle size={12} className="text-slate-200"/>}
-                              <span className="truncate">{o}</span>
+              {Object.entries(unitMap).map(([unit, qs]) => (
+                <div key={unit} className="mb-4">
+                  <div className="mb-2 flex items-center gap-2 pl-1">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{unit}</span>
+                    <span className={`${num} text-[11px] text-slate-300`}>({qs.length})</span>
+                  </div>
+                  <div className="space-y-2">
+                    {qs.map(x => (
+                      <div key={x.id} className={`${cardH} p-4 ${selected.has(x.id) ? "ring-2 ring-violet-200 border-violet-200" : ""}`}>
+                        <div className="flex items-start gap-3">
+                          <input type="checkbox" checked={selected.has(x.id)} onChange={() => toggleOne(x.id)} className="mt-1 h-4 w-4 shrink-0 accent-violet-600"/>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {x.difficulty && <Badge tone={x.difficulty==="hard"?"rose":x.difficulty==="easy"?"emerald":"amber"}>{x.difficulty}</Badge>}
+                              <Badge tone="slate">{x.topic}</Badge>
+                              <Badge tone="slate">{x.points} pt</Badge>
                             </div>
-                          ))}
+                            <p className="mt-2 text-sm font-semibold text-slate-800">{x.question}</p>
+                            <p className="mt-1 text-[10px] text-slate-400">Click an option below to change the correct answer</p>
+                            <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                              {x.options.map((o, i) => (
+                                <button
+                                  key={i}
+                                  onClick={() => reassignCorrect(x, i)}
+                                  title={i===x.correct ? "Current correct answer" : "Set this as the correct answer"}
+                                  className={`flex items-center gap-2 rounded-lg px-2 py-1 text-left text-xs transition ${i===x.correct ? "bg-emerald-50 font-semibold text-emerald-700" : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"}`}>
+                                  {i===x.correct ? <CheckCircle2 size={12} className="shrink-0"/> : <Circle size={12} className="shrink-0 text-slate-200"/>}
+                                  <span className="truncate">{o}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-1">
+                            <button onClick={() => setEditing(x)} className="rounded-lg p-2 text-slate-300 transition hover:bg-violet-50 hover:text-violet-500" title="Edit question"><Edit3 size={14}/></button>
+                            <button onClick={() => remove(x.id)} className="rounded-lg p-2 text-slate-300 transition hover:bg-rose-50 hover:text-rose-500" title="Delete"><Trash2 size={14}/></button>
+                          </div>
                         </div>
                       </div>
-                      <button onClick={() => remove(x.id)} className="shrink-0 rounded-xl p-2 text-slate-300 transition hover:bg-rose-50 hover:text-rose-500" title="Delete"><Trash2 size={15}/></button>
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           ))}
+      </div>
+    </div>
+  );
+}
+
+function EditQuestionModal({ question, subjects, units, onClose, onSaved, onError }) {
+  const [text, setText]         = useState(question.question);
+  const [opts, setOpts]         = useState([...question.options]);
+  const [correct, setCorrect]   = useState(question.correct);
+  const [subject, setSubject]   = useState(question.subject || "");
+  const [unit, setUnit]         = useState(question.unit || "");
+  const [topic, setTopic]       = useState(question.topic || "");
+  const [difficulty, setDiff]   = useState(question.difficulty || "medium");
+  const [points, setPoints]     = useState(question.points || 1);
+  const [saving, setSaving]     = useState(false);
+  const ready = text.trim() && opts.every(o => o.trim()) && unit.trim();
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const updated = await updateQuestion(question.id, {
+        question: text.trim(), options: opts.map(o => o.trim()), correct,
+        subject: subject.trim(), unit: unit.trim(), topic: topic.trim() || "General",
+        difficulty, points: Number(points) || 1,
+      });
+      onSaved(updated);
+    } catch (err) { onError(err.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className={`${card} w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto space-y-4`} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-900">Edit question</h3>
+          <button onClick={onClose} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"><XCircle size={18}/></button>
+        </div>
+        <textarea className={`${inp} resize-none`} rows={2} value={text} onChange={e=>setText(e.target.value)}/>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {opts.map((o, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <button onClick={() => setCorrect(i)} className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl text-xs font-bold transition ${correct===i?"bg-emerald-600 text-white":"bg-slate-100 text-slate-500 hover:bg-slate-200"}`}>{"ABCD"[i]}</button>
+              <input className={inp} value={o} onChange={e => { const n=[...opts]; n[i]=e.target.value; setOpts(n); }}/>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Subject</label>
+            <input className={inp} list="edl-subj" value={subject} onChange={e=>setSubject(e.target.value)}/>
+            <datalist id="edl-subj">{subjects.map(s=><option key={s} value={s}/>)}</datalist>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Unit *</label>
+            <input className={inp} list="edl-unit" value={unit} onChange={e=>setUnit(e.target.value)}/>
+            <datalist id="edl-unit">{units.map(u=><option key={u} value={u}/>)}</datalist>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Topic</label>
+            <input className={inp} value={topic} onChange={e=>setTopic(e.target.value)}/>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Difficulty</label>
+            <select className={inp} value={difficulty} onChange={e=>setDiff(e.target.value)}>
+              <option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button className={btnP} disabled={!ready||saving} onClick={save}>{saving?"Saving…":"Save changes"}</button>
+          <button className={btnG} onClick={onClose}>Cancel</button>
+          <span className="text-xs text-slate-400">Click a letter to change the correct answer</span>
+        </div>
       </div>
     </div>
   );
@@ -1454,7 +1638,8 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
       { label: "Percent %",       key: "percent" },
       { label: "Grade",           value: r => r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
       { label: "Flags",           key: "violations" },
-      { label: "Time Used (s)",   key: "time_used_sec" },
+      { label: "Time Taken",      value: r => fmtTime(r.time_used_sec || 0) },
+      { label: "Time Taken (s)",  key: "time_used_sec" },
       { label: "Submitted At",    value: r => new Date(r.submitted_at).toLocaleString() },
     ]);
   };
@@ -1555,7 +1740,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
           <div className="border-b border-slate-100 px-5 py-3.5 flex items-center justify-between">
             <h4 className="text-sm font-bold text-slate-900">All attempts</h4>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">{visible.length === at.length ? `${at.length} total` : `${visible.length} of ${at.length}`} · avg {fmtTime(avgTime)}</span>
+              <span className="text-xs text-slate-400">{visible.length === at.length ? `${at.length} total` : `${visible.length} of ${at.length}`} · avg score <strong className="text-slate-600">{avg}%</strong> · avg time {fmtTime(avgTime)}</span>
               {fastCount>0&&<Badge tone="amber">{fastCount} unusually fast</Badge>}
             </div>
           </div>
@@ -1577,11 +1762,12 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
                   <th className="px-3 py-2.5 text-right">Score</th>
                   <th className="px-3 py-2.5 text-right">%</th>
                   <th className="px-3 py-2.5 text-center">Flags</th>
+                  <th className="px-3 py-2.5 text-right hidden lg:table-cell">Time taken</th>
                   <th className="px-4 py-2.5 text-right hidden md:table-cell">Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {!visible.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400">{at.length ? "No students match this filter." : "No attempts yet."}</td></tr>}
+                {!visible.length && <tr><td colSpan={7} className="px-5 py-10 text-center text-slate-400">{at.length ? "No students match this filter." : "No attempts yet."}</td></tr>}
                 {visible.map(a => {
                   const course = a.student_course || a.meta?.course || "";
                   const fast = (a.time_used_sec||0) < quiz.duration_sec * 0.3;
@@ -1609,6 +1795,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
                           {fast && <Badge tone="amber" title="Submitted unusually fast">fast</Badge>}
                         </div>
                       </td>
+                      <td className={`px-3 py-2.5 text-right ${num} text-xs hidden lg:table-cell ${fast ? "font-semibold text-amber-600" : "text-slate-500"}`}>{fmtTime(a.time_used_sec || 0)}</td>
                       <td className="px-4 py-2.5 text-right text-xs text-slate-400 hidden md:table-cell">{dateStr(a.submitted_at)}</td>
                     </tr>
                   );

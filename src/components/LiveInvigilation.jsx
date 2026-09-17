@@ -161,7 +161,7 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
               <tr>
                 <th className="px-4 py-2.5 text-left font-semibold">Student</th>
                 <th className="px-3 py-2.5 text-left font-semibold">Progress / Score</th>
-                <th className="px-3 py-2.5 text-center font-semibold">Time left</th>
+                <th className="px-3 py-2.5 text-center font-semibold">Time left / taken</th>
                 <th className="px-3 py-2.5 text-center font-semibold">Flags</th>
                 <th className="px-4 py-2.5 text-left font-semibold hidden md:table-cell">Last event</th>
               </tr>
@@ -216,7 +216,11 @@ export default function LiveInvigilation({ quiz, attempts = [] }) {
                           )}
                     </td>
                     <td className={`px-3 py-2.5 text-center ${num} ${(r.remaining_sec ?? 0) < 120 && !done ? "font-bold text-rose-600" : "text-slate-500"}`}>
-                      {done || gone ? "—" : fmtClock(r.remaining_sec)}
+                      {done
+                        ? (attempt ? <span title="Time taken">{fmtClock(attempt.time_used_sec)}</span> : "—")
+                        : gone
+                          ? "—"
+                          : fmtClock(r.remaining_sec)}
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       <Badge tone={v === 0 ? "emerald" : v <= 2 ? "amber" : "rose"}>{v}</Badge>
