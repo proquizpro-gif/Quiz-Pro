@@ -162,14 +162,36 @@ function AppInner() {
     })();
   }, [user, isFaculty]);
 
-  // Realtime: faculty dashboards update the instant a student submits,
-  // no manual refresh needed.
+  // Faculty attempt freshness — two independent mechanisms so a score
+  // never fails to appear:
+  //   1. Realtime push (instant) — but this silently delivers nothing if
+  //      the `attempts` table isn't in Supabase's realtime publication.
+  //   2. A 20s poll (guaranteed) — the safety net. Without it, a teacher
+  //      who opened a quiz before a student submitted would see 0 attempts
+  //      until a full page reload, which is exactly the reported bug.
   useEffect(() => {
     if (!isFaculty || !dataReady) return;
+
+    const merge = (rows) => setAttempts(prev => {
+      const seen = new Set(prev.map(a => a.id));
+      const fresh = rows.filter(a => a.id && !seen.has(a.id));
+      return fresh.length ? [...fresh, ...prev] : prev;
+    });
+
     const unsubscribe = subscribeToAttempts((newAttempt) => {
       setAttempts(prev => prev.some(a => a.id === newAttempt.id) ? prev : [newAttempt, ...prev]);
     });
-    return unsubscribe;
+
+    const poll = setInterval(async () => {
+      try { merge(await fetchAttempts()); } catch (_) { /* transient */ }
+    }, 20000);
+
+    // Also refresh the moment the tab regains focus — a teacher flipping
+    // back from the student roster expects current numbers.
+    const onFocus = async () => { try { merge(await fetchAttempts()); } catch (_) {} };
+    window.addEventListener("focus", onFocus);
+
+    return () => { unsubscribe(); clearInterval(poll); window.removeEventListener("focus", onFocus); };
   }, [isFaculty, dataReady]);
 
   if (isLoading) return <Spinner />;

@@ -37,7 +37,11 @@ async function retryStrip(table, op, payload, optionalCols) {
   throw new Error(`${table}: could not reconcile schema`);
 }
 
-const ATTEMPT_OPTIONAL  = ["student_course", "student_semester", "student_cu_id", "student_phone", "meta"];
+// `items` is deliberately NOT strippable — it powers answer review and
+// question analysis, and silently dropping it would hide a real schema
+// problem behind apparently-working submissions. `log` is cosmetic
+// (the integrity event list) so it can be shed if the column is absent.
+const ATTEMPT_OPTIONAL  = ["log", "student_course", "student_semester", "student_cu_id", "student_phone", "meta"];
 const QUIZ_OPTIONAL     = ["question_ids", "show_answers_policy", "subject"];
 const QUESTION_OPTIONAL = ["subject", "difficulty", "topic", "points"];
 
