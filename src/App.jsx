@@ -18,7 +18,6 @@ import {
   logAudit, subscribeToAttempts,
   startLiveSession, touchLiveSession, endLiveSession,
 } from "./lib/db";
-import { parseWorkbook, downloadTemplate } from "./lib/xlsx-import";
 import { downloadCSV } from "./lib/csv";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
@@ -143,21 +142,23 @@ function AppInner() {
     if (!user) return;
     pingKeepAlive(); // secondary keep-alive — see lib/keepalive.js
     (async () => {
-      try {
-        const [qs, qzs, ats, crs] = await Promise.all([
-          fetchQuestions(),
-          fetchQuizzes(),
-          isFaculty ? fetchAttempts() : fetchMyAttempts(user.id),
-          fetchMyClassrooms(),
-        ]);
-        setQuestions(qs);
-        setQuizzes(qzs);
-        setAttempts(ats);
-        setClassrooms(crs);
-        setDataReady(true);
-      } catch (err) {
-        setDataError(err.message);
-      }
+      // allSettled, not all: one slow or failing query (say classrooms)
+      // must not blank the entire dashboard. Each dataset fills in on its
+      // own; a partial failure surfaces a dismissible notice rather than a
+      // dead screen, and the rest of the app stays usable.
+      const [qs, qzs, ats, crs] = await Promise.allSettled([
+        fetchQuestions(),
+        fetchQuizzes(),
+        isFaculty ? fetchAttempts() : fetchMyAttempts(user.id),
+        fetchMyClassrooms(),
+      ]);
+      if (qs.status  === "fulfilled") setQuestions(qs.value);
+      if (qzs.status === "fulfilled") setQuizzes(qzs.value);
+      if (ats.status === "fulfilled") setAttempts(ats.value);
+      if (crs.status === "fulfilled") setClassrooms(crs.value);
+      const failed = [qs, qzs, ats, crs].filter(r => r.status === "rejected");
+      if (failed.length) setDataError(failed[0].reason?.message || "Some data could not be loaded.");
+      setDataReady(true);
     })();
   }, [user, isFaculty]);
 
@@ -204,7 +205,7 @@ function AppInner() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        {dataError && <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-center gap-2"><AlertCircle size={16}/> Database error: {dataError}. Check your Supabase config.</div>}
+        {dataError && <div className="mb-6 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertCircle size={16} className="shrink-0"/><span className="flex-1">Some data could not be loaded ({dataError}). The rest of the app is usable — reload to try again.</span><button onClick={() => setDataError("")} className="shrink-0 text-amber-400 hover:text-amber-700"><XCircle size={16}/></button></div>}
 
         {view === "admin" && isAdmin
           ? <AdminPanel questions={questions} quizzes={quizzes} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms}/>
@@ -506,9 +507,20 @@ function QuestionBank({ questions, setQuestions }) {
   const onFile = e => {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload  = () => setPreview(parseWorkbook(new Uint8Array(reader.result), questions));
+    reader.onload  = async () => {
+      // Load the ~800KB spreadsheet parser only when a file is actually
+      // chosen. It is faculty-only, so students never download it and
+      // their exam page loads far lighter.
+      const { parseWorkbook } = await import("./lib/xlsx-import");
+      setPreview(parseWorkbook(new Uint8Array(reader.result), questions));
+    };
     reader.onerror = () => setPreview({ error: "Could not read file." });
     reader.readAsArrayBuffer(file); e.target.value = "";
+  };
+
+  const onDownloadTemplate = async () => {
+    const { downloadTemplate } = await import("./lib/xlsx-import");
+    downloadTemplate();
   };
 
   const commitImport = async () => {
@@ -589,7 +601,7 @@ function QuestionBank({ questions, setQuestions }) {
               <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-500">Upload an .xlsx. Column names matched flexibly. Every row reviewed before saving. Answer key accepts a letter (A–D) or a 0-indexed number.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className={btnG} onClick={downloadTemplate}><Download size={15}/> Template</button>
+              <button className={btnG} onClick={onDownloadTemplate}><Download size={15}/> Template</button>
               <button className={btnP} onClick={() => fileRef.current?.click()}><Upload size={15}/> Upload .xlsx</button>
               <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={onFile} className="hidden"/>
             </div>

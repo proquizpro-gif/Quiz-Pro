@@ -680,11 +680,22 @@ function buildDomainIndex(allQuestions) {
     if (hit) { byId.set(q.id, hit); continue; }
 
     // Teacher-authored: match unit or topic against domain vocabulary.
+    // Whole-phrase or whole-word only — a naive substring test wrongly
+    // folds "Timetables" into the "Tables" domain and "Vegetable Costing"
+    // too, which would silently corrupt a student's profile with
+    // questions that were never part of the framework.
     const u = norm(q.unit), t = norm(q.topic);
-    const dom = DOMAINS.find(d => d.units.some(x => {
-      const n = norm(x);
-      return n === u || n === t || u.includes(n) || n.includes(u);
-    }));
+    const wordSet = new Set([...u.split(" "), ...t.split(" ")]);
+    const phraseMatches = (vocab) => {
+      const n = norm(vocab);
+      if (n === u || n === t) return true;                 // exact unit/topic
+      if (u.includes(n) && n.includes(" ")) return true;   // multi-word vocab as a phrase inside the unit
+      if (t.includes(n) && n.includes(" ")) return true;
+      // single-word vocab must match a whole word, never a substring
+      if (!n.includes(" ") && wordSet.has(n)) return true;
+      return false;
+    };
+    const dom = DOMAINS.find(d => d.units.some(phraseMatches));
     if (!dom) continue;
     const lvl = q.difficulty === "hard" ? 3 : q.difficulty === "easy" ? 1 : 2;
     byId.set(q.id, { domain: dom.id, level: lvl });
