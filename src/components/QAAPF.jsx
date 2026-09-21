@@ -19,6 +19,7 @@ import {
 import { downloadCSV } from "../lib/csv.js";
 import { insertQuestions, insertQuiz, fetchQuestions } from "../lib/db.js";
 import { useAuth } from "../lib/AuthContext.jsx";
+import QAAPFEvidence from "./QAAPFEvidence.jsx";
 
 /* ── Q-Level definitions ────────────────────────────────────────── */
 export const Q_LEVELS = [
@@ -782,6 +783,7 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
     ["dashboard", "Results"],
     ["cohort",    "Heatmap"],
     ["bank",      "Question bank"],
+    ["accredit",  "Accreditation"],
     ["levels",    "Framework"],
   ];
 
@@ -812,6 +814,7 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
       {tab==="levels"    && <LevelsGuide/>}
       {tab==="bank"      && <QuestionInventory questions={questions} setQuestions={setQuestions} toast2={toast2}/>}
       {tab==="cohort"    && <CohortHeatmap attempts={attempts} questions={questions}/>}
+      {tab==="accredit"  && <QAAPFEvidence attempts={attempts} questions={questions} quizzes={quizzes} classrooms={classrooms}/>}
     </div>
   );
 }
