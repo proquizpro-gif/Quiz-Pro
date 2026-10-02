@@ -19,20 +19,21 @@
        silently rewritten.
    ══════════════════════════════════════════════════════════════════ */
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Shield, LayoutDashboard, Users, UserX, User, Layers, TrendingUp,
   FlaskConical, FileCheck2, FileDown, Settings, ScrollText, Award,
   AlertTriangle, CheckCircle2, Printer, Search, ChevronDown, Info,
-  ClipboardList, GraduationCap,
+  ClipboardList,
 } from "lucide-react";
 import { card, btn, btnP, btnG, inp, num, Badge, Empty, Stat, Toast } from "./ui.jsx";
 import { downloadCSV } from "../lib/csv.js";
 import { logAudit, fetchAuditLog, fetchClassroomMembers } from "../lib/db.js";
 import { useAuth } from "../lib/AuthContext.jsx";
-import {
-  DOMAINS, Q_LEVELS, getQLevel, computeQAAPFProfile, RELIABLE_MIN,
-} from "./QAAPF.jsx";
+/* QAAPF.jsx imports this file, so this is a cycle. Safe only because
+   both symbols are referenced inside function bodies, never at module
+   scope — at import time these bindings are still uninitialised. */
+import { DOMAINS, computeQAAPFProfile } from "./QAAPF.jsx";
 
 /* ── Statistics primitives (pure, testable) ───────────────────────── */
 const asc = (a, b) => a - b;

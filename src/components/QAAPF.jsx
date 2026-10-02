@@ -5,21 +5,20 @@
    Reports 6 proficiency bands (Q1–Q6) mirroring CEFR logic.
    ══════════════════════════════════════════════════════════════════ */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import {
-  Brain, BarChart2, BookOpen, ChevronDown, ChevronUp,
-  FileDown, Layers, Target, TrendingUp, AlertTriangle,
-  CheckCircle2, Circle, Award, Users, Clock, Sparkles,
-  RefreshCw, Plus, XCircle, GraduationCap,
+  Brain, BarChart2, FileDown, Layers, Target,
+  CheckCircle2, Circle, Users, Sparkles, RefreshCw, Plus,
 } from "lucide-react";
 import {
   card, cardH, btn, btnP, btnG, inp, num,
-  Badge, Empty, Toast, Spinner, Stat, shuffle,
+  Badge, Empty, Toast, shuffle,
 } from "./ui.jsx";
 import { downloadCSV } from "../lib/csv.js";
-import { insertQuestions, insertQuiz, fetchQuestions } from "../lib/db.js";
+import { insertQuestions, insertQuiz } from "../lib/db.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import QAAPFEvidence from "./QAAPFEvidence.jsx";
+import QAAPF2 from "./QAAPF2.jsx";
 
 /* ── Q-Level definitions ────────────────────────────────────────── */
 export const Q_LEVELS = [
@@ -48,7 +47,7 @@ export const DOMAINS = [
 ];
 
 /* ═══════════════════════════════════════════════════════════════════
-   MASTER QUESTION INVENTORY — 480 questions across all 8 domains
+   MASTER QUESTION INVENTORY — see QAAPF_QUESTIONS.length for the count
    Each question tagged: domain, unit, difficulty (1=easy,2=med,3=hard)
    Options shuffled per attempt in the exam engine.
    ═══════════════════════════════════════════════════════════════════ */
@@ -662,18 +661,72 @@ const LEVEL_WEIGHT = { 1: 1, 2: 1.6, 3: 2.4 };
    a proficiency finding. */
 export const RELIABLE_MIN = 6;
 
+/* ══════════════════════════════════════════════════════════════════
+   COGNITIVE DEMAND — the second axis
+   ══════════════════════════════════════════════════════════════════
+   Difficulty says how hard an item is. Cognitive demand says what kind
+   of thinking it asks for. They are deliberately orthogonal: a hard
+   recall item is still recall, it just asks for an obscure fact. Folding
+   difficulty into cognitive level would collapse two axes into one and
+   destroy exactly the diagnostic separation this is for — the whole
+   point is to tell "knows the procedure but cannot apply it" apart from
+   "applies well but only on easy numbers".
+
+   Demand is derived from the item's skill tag, not hand-assigned per
+   question. That is a framework-level mapping rule, and the UI says so
+   rather than presenting it as an expert tag on each item. */
+export const COGNITIVE = [
+  { id:0, key:"recall",   label:"Recall",        desc:"Retrieve a fact or run a single known operation." },
+  { id:1, key:"understand",label:"Understanding",desc:"Apply a routine procedure in a familiar form." },
+  { id:2, key:"apply",    label:"Application",   desc:"Carry a known method into an unfamiliar context." },
+  { id:3, key:"analyse",  label:"Analysis",      desc:"Decompose, compare or infer across several facts." },
+  { id:4, key:"higher",   label:"Higher-order",  desc:"Model, evaluate or reason through an open problem." },
+];
+
+/* Skill tag → cognitive demand. Tags not listed resolve to null, and a
+   null is reported as unmapped rather than guessed into a bucket. */
+const TOPIC_DEMAND = {
+  "number sense":0, "whole numbers":0, "bodmas":0, "fractions":0, "decimals":0, "approximation":0,
+  "percentages":1, "profit & loss":1, "discount":1, "simple interest":1, "compound interest":1,
+  "ratio & proportion":1, "averages":1, "tables":1, "bar charts":1, "pie charts":1, "line graph":1,
+  "algebra":2, "number series":2, "sequences":2, "missing numbers":2, "patterns":2,
+  "estimation":2, "applied":2, "finance":2, "statistics":2, "% change":2,
+  "qc":3, "multi-var":3, "growth":3, "arrangement":3, "classification":3,
+  "conditional":3, "deductive":3, "puzzles":3, "reasoning":3, "multi-step":3, "decision":3,
+  "modelling":4, "evaluation":4, "problem solving":4,
+};
+
+export const cognitiveOf = (topic) => {
+  const k = String(topic || "").trim().toLowerCase();
+  const d = TOPIC_DEMAND[k];
+  return d === undefined ? null : d;
+};
+
 /* Resolve any question — built-in or teacher-authored — to a domain.
    Built-in items are matched on their exact text, which survives the
    round trip through the database. Teacher questions are matched on
    unit or topic against the domain vocabulary. */
+/* The index is identical for every student in a cohort, but the profile
+   is computed per student, so a 200-student class was rebuilding it 200
+   times — each rebuild normalising 528 built-in items plus the whole
+   teacher bank, with a vocabulary scan for every unmatched question.
+   Keyed on the array identity React already hands us, so it rebuilds
+   exactly when the question bank actually changes. */
+const _indexCache = new WeakMap();
+let _emptyIndex = null;
+
 function buildDomainIndex(allQuestions) {
-  const byText = new Map();   // normalised question text -> { domain, level }
-  const byId   = new Map();   // database id              -> { domain, level }
+  const key = Array.isArray(allQuestions) ? allQuestions : null;
+  if (key) { const hit = _indexCache.get(key); if (hit) return hit; }
+  else if (_emptyIndex) return _emptyIndex;
+
+  const byText = new Map();   // normalised question text -> meta
+  const byId   = new Map();   // database id              -> meta
 
   const norm = t => String(t || "").trim().toLowerCase().replace(/\s+/g, " ");
 
   for (const bq of QAAPF_QUESTIONS) {
-    byText.set(norm(bq.q), { domain: bq.d, level: bq.lv });
+    byText.set(norm(bq.q), { domain: bq.d, level: bq.lv, unit: bq.u, topic: bq.t, cog: cognitiveOf(bq.t) });
   }
 
   for (const q of (allQuestions || [])) {
@@ -699,10 +752,122 @@ function buildDomainIndex(allQuestions) {
     const dom = DOMAINS.find(d => d.units.some(phraseMatches));
     if (!dom) continue;
     const lvl = q.difficulty === "hard" ? 3 : q.difficulty === "easy" ? 1 : 2;
-    byId.set(q.id, { domain: dom.id, level: lvl });
+    byId.set(q.id, {
+      domain: dom.id, level: lvl,
+      unit: q.unit || q.topic || "Unspecified",
+      topic: q.topic || q.unit || "",
+      cog: cognitiveOf(q.topic) ?? cognitiveOf(q.unit),
+    });
   }
 
-  return { byId, byText, norm };
+  const index = { byId, byText, norm };
+  if (key) _indexCache.set(key, index); else _emptyIndex = index;
+  return index;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   BASELINE CONFIDENCE
+   ══════════════════════════════════════════════════════════════════
+   A category is only worth acting on if the evidence behind it holds
+   up. Confidence is therefore computed from the response pattern, not
+   from the score: a 72% built on twelve easy items in one domain is a
+   far weaker claim than a 72% built on forty items spanning every
+   domain and all three difficulty tiers.
+
+   Every deduction is reported with the signal that caused it, so a
+   reader can audit the number instead of trusting it. Where a signal
+   cannot be evaluated — no timing recorded, say — it is reported as
+   unavailable and costs nothing. Absence of evidence never counts
+   against the student. */
+export function computeConfidence({ answered, presented, domainsCovered, tiersCovered, byLevel, rawAccuracy, chanceRate, optionsRecorded = true, secPerItem }) {
+  const factors = [];
+  let penalty = 0;
+  const hit = (p, label, status, detail) => { penalty += p; factors.push({ label, status, detail }); };
+
+  /* 1. Volume of evidence */
+  if (answered < RELIABLE_MIN)            hit(35, "Evidence volume", "weak",  `Only ${answered} items answered — below the ${RELIABLE_MIN}-item floor for any single finding.`);
+  else if (answered < RELIABLE_MIN * 2)   hit(18, "Evidence volume", "thin",  `${answered} items answered — enough for an indication, not a classification.`);
+  else if (answered < RELIABLE_MIN * 4)   hit(6,  "Evidence volume", "ok",    `${answered} items answered.`);
+  else                                    hit(0,  "Evidence volume", "good",  `${answered} items answered — a solid base.`);
+
+  /* 2. Breadth across domains: a profile drawn from two domains cannot
+        speak to overall aptitude, however many items it rests on. */
+  if (domainsCovered <= 1)      hit(25, "Domain breadth", "weak", `Evidence from ${domainsCovered} domain — this is a topic score, not an aptitude profile.`);
+  else if (domainsCovered <= 3) hit(12, "Domain breadth", "thin", `Evidence from ${domainsCovered} of ${DOMAINS.length} domains.`);
+  else if (domainsCovered <= 5) hit(5,  "Domain breadth", "ok",   `Evidence from ${domainsCovered} of ${DOMAINS.length} domains.`);
+  else                          hit(0,  "Domain breadth", "good", `Evidence from ${domainsCovered} of ${DOMAINS.length} domains.`);
+
+  /* 3. Difficulty spread: without harder items the ceiling is unknown,
+        and a high score only proves the easy tier was cleared. */
+  if (tiersCovered <= 1)      hit(22, "Difficulty spread", "weak", "Items came from a single difficulty tier — the ability ceiling cannot be located.");
+  else if (tiersCovered === 2) hit(9, "Difficulty spread", "thin", "Items spanned two of three difficulty tiers.");
+  else                         hit(0, "Difficulty spread", "good", "Items spanned all three difficulty tiers.");
+
+  /* 4. Completion: skipped items depress the score without being
+        evidence of inability, so a heavily skipped paper understates. */
+  const skipped = Math.max(0, presented - answered);
+  const skipRate = presented ? skipped / presented : 0;
+  if (skipRate >= 0.4)      hit(20, "Completion", "weak", `${skipped} of ${presented} items left unanswered — the score understates demonstrated ability.`);
+  else if (skipRate >= 0.15) hit(9, "Completion", "thin", `${skipped} of ${presented} items left unanswered.`);
+  else if (skipped > 0)      hit(2, "Completion", "ok",   `${skipped} of ${presented} items left unanswered.`);
+  else                       hit(0, "Completion", "good", "Every item attempted.");
+
+  /* 5. Chance-level responding. On a four-option paper a student who
+        answers everything and lands near 25% has produced a number that
+        is indistinguishable from random selection. Flagging this is the
+        difference between "scored low" and "we learned nothing". */
+  if (chanceRate && answered >= RELIABLE_MIN * 2 && rawAccuracy !== null) {
+    const margin = rawAccuracy - chanceRate;
+    if (margin <= 0.04)      hit(30, "Response pattern", "weak", `Accuracy ${(rawAccuracy*100).toFixed(0)}% sits at the ${(chanceRate*100).toFixed(0)}% chance rate — indistinguishable from guessing.`);
+    else if (margin <= 0.10) hit(12, "Response pattern", "thin", `Accuracy ${(rawAccuracy*100).toFixed(0)}% is close to the ${(chanceRate*100).toFixed(0)}% chance rate.`);
+    else                     hit(0,  "Response pattern", "good", `Accuracy ${(rawAccuracy*100).toFixed(0)}% is clearly above the ${(chanceRate*100).toFixed(0)}% chance rate.`);
+  } else {
+    /* Say which of the two reasons applies. Reporting "too few items"
+       when the real cause is that the paper never stored its options
+       sends a reader looking for a problem that is not there. */
+    factors.push({
+      label: "Response pattern", status: "na",
+      detail: !optionsRecorded
+        ? "This attempt did not record the answer options, so the chance rate cannot be established."
+        : `Fewer than ${RELIABLE_MIN * 2} answered items — too few to distinguish performance from chance.`,
+    });
+  }
+
+  /* 6. Difficulty coherence. Accuracy should broadly fall as difficulty
+        rises. A student who outperforms on hard items relative to easy
+        ones is either guessing or has met mis-keyed items — either way
+        the classification is not safe to act on. Only evaluated where
+        both tiers carry enough items to mean anything. */
+  const e = byLevel?.[1], h = byLevel?.[3];
+  if (e && h && e.n >= 3 && h.n >= 3) {
+    const ea = e.c / e.n, ha = h.c / h.n;
+    if (ha - ea >= 0.25)      hit(18, "Difficulty coherence", "weak", `Hard-item accuracy (${(ha*100).toFixed(0)}%) far exceeds easy-item accuracy (${(ea*100).toFixed(0)}%) — check the answer key for these items.`);
+    else if (ha - ea >= 0.10) hit(7,  "Difficulty coherence", "thin", `Hard items scored above easy items — unusual, worth a look.`);
+    else                      hit(0,  "Difficulty coherence", "good", `Accuracy falls as difficulty rises, as expected.`);
+  } else {
+    factors.push({ label:"Difficulty coherence", status:"na", detail:"Not enough items at both the easy and hard tiers to compare." });
+  }
+
+  /* 7. Pace. Quantitative items need working out. Clearing them far
+        faster than that implies they were not worked. Reported only
+        when timing was actually recorded. */
+  if (secPerItem !== null && secPerItem !== undefined && answered >= RELIABLE_MIN) {
+    if (secPerItem < 10)      hit(20, "Working pace", "weak", `${secPerItem.toFixed(0)}s per item — too fast for the problems to have been worked.`);
+    else if (secPerItem < 20) hit(8,  "Working pace", "thin", `${secPerItem.toFixed(0)}s per item — faster than these items usually take.`);
+    else                      hit(0,  "Working pace", "good", `${secPerItem.toFixed(0)}s per item.`);
+  } else {
+    factors.push({ label:"Working pace", status:"na", detail:"No timing recorded for this attempt." });
+  }
+
+  const score = Math.max(0, Math.min(100, 100 - penalty));
+  const band  = score >= 75 ? "High" : score >= 50 ? "Moderate" : "Low";
+  const advice = band === "High"
+    ? "The classification is well supported by the response pattern."
+    : band === "Moderate"
+    ? "Treat the classification as indicative. Reassessment on a fuller paper is recommended before acting on it."
+    : "The classification is not safe to act on. Reassess before assigning an intervention on this basis.";
+
+  return { score, band, factors, advice };
 }
 
 export function computeQAAPFProfile(attempts, allQuestions) {
@@ -713,22 +878,95 @@ export function computeQAAPFProfile(attempts, allQuestions) {
     domainScore[d.id] = { wCorrect: 0, wTotal: 0, correct: 0, seen: 0, byLevel: { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } } };
   }
 
+  /* The three extra axes the total score cannot carry: where competence
+     stops (difficulty), what kind of thinking holds up (cognitive), and
+     which specific sub-skill is failing (unit). */
+  const levelAgg = { 1:{c:0,n:0}, 2:{c:0,n:0}, 3:{c:0,n:0} };
+  const cogAgg   = {};
+  for (const c of COGNITIVE) cogAgg[c.id] = { c:0, n:0 };
+  const unitAgg  = new Map();   // "domain||unit" -> { domain, unit, c, n }
+
+  let presented = 0, answered = 0;
+  /* Chance is accumulated per item rather than taken as 1/average
+     options. A paper mixing two-option and four-option items has no
+     single chance rate, and averaging the option counts invents one
+     that belongs to neither. */
+  let chanceSum = 0, chanceItems = 0;
+  /* Pace is per item actually sat, which includes items outside the
+     framework — the student spent time on those too. Counted across the
+     whole attempt, not just the items this profile scores. */
+  let rawItems = 0, timedSec = 0, timedItems = 0, anyUntimed = false;
+
   /* Walk every answered item exactly once. Keying the accumulation off
      the item itself — rather than iterating the bank and looking items
      up — is what stops a question being counted twice when it appears
      in both the built-in set and the teacher's bank. */
-  for (const att of attempts || []) {
-    for (const it of (att.items || [])) {
+  /* Earliest attempt first, so that where the same question appears in
+     more than one attempt the baseline response is the one that counts. */
+  const ordered = [...(attempts || [])].sort(
+    (a, b) => new Date(a.submitted_at || 0) - new Date(b.submitted_at || 0)
+  );
+
+  /* A retake re-presents the same questions. Counting both responses
+     scores one question twice — and a student who answers an item wrong
+     then right ends up recorded at 50% on it, which describes nobody.
+     First response per question wins, which is what makes this a
+     baseline rather than a running average. */
+  const seenKeys = new Set();
+
+  for (const att of ordered) {
+    const items = Array.isArray(att.items) ? att.items : [];
+    rawItems += items.length;
+    const t = Number(att.time_used_sec);
+    if (Number.isFinite(t) && t > 0) { timedSec += t; timedItems += items.length; }
+    else anyUntimed = true;
+
+    for (const it of items) {
       const meta = byId.get(it.qid) || byText.get(norm(it.question));
       if (!meta) continue;                       // outside the framework
       const bucket = domainScore[meta.domain];
       if (!bucket) continue;
+
+      const key = it.qid != null ? `id:${it.qid}` : `q:${norm(it.question)}`;
+      if (seenKeys.has(key)) continue;           // already counted from an earlier attempt
+      seenKeys.add(key);
+
+      /* Correctness demands a real answer against a real key. Comparing
+         the two fields directly let an item with no recorded key match a
+         skipped response — undefined === undefined — and be scored as a
+         correct answer the student never gave. */
+      const didAnswer = it.chosen !== null && it.chosen !== undefined;
+      const hasKey    = it.correct !== null && it.correct !== undefined;
+      const ok        = didAnswer && hasKey && it.chosen === it.correct;
+
       const w  = LEVEL_WEIGHT[meta.level] || 1;
-      const ok = it.chosen === it.correct;
       bucket.seen++; bucket.wTotal += w;
       if (ok) { bucket.correct++; bucket.wCorrect += w; }
       const lv = bucket.byLevel[meta.level];
       if (lv) { lv.n++; if (ok) lv.c++; }
+
+      /* Participation is tracked apart from correctness: a skipped item
+         and a wrong item both score zero, but they are not the same
+         event and the confidence engine has to tell them apart. */
+      presented++;
+      if (didAnswer) {
+        answered++;
+        if (Array.isArray(it.options) && it.options.length >= 2) {
+          chanceSum += 1 / it.options.length; chanceItems++;
+        }
+      }
+
+      const la = levelAgg[meta.level];
+      if (la) { la.n++; if (ok) la.c++; }
+
+      if (meta.cog !== null && meta.cog !== undefined && cogAgg[meta.cog]) {
+        cogAgg[meta.cog].n++; if (ok) cogAgg[meta.cog].c++;
+      }
+
+      const uKey = `${meta.domain}||${meta.unit || "Unspecified"}`;
+      let ub = unitAgg.get(uKey);
+      if (!ub) { ub = { domain: meta.domain, unit: meta.unit || "Unspecified", c:0, n:0 }; unitAgg.set(uKey, ub); }
+      ub.n++; if (ok) ub.c++;
     }
   }
 
@@ -762,11 +1000,100 @@ export function computeQAAPFProfile(attempts, allQuestions) {
   const strengths = assessed.filter(d => d.pct >= 70).sort((a, b) => b.pct - a.pct).slice(0, 3);
   const gaps      = assessed.filter(d => d.pct <  60).sort((a, b) => a.pct - b.pct).slice(0, 3);
 
+  /* ── C. Difficulty profile ───────────────────────────────────────
+     Two students on 72% are not the same student. One cleared the easy
+     tier and stopped; the other was still answering hard items. This is
+     the axis that tells them apart, and it is reported in plain counts
+     so nobody has to take the weighted total on trust. */
+  const difficultyProfile = [1,2,3].map(l => ({
+    level: l,
+    label: diffLabel(l),
+    correct: levelAgg[l].c,
+    total:   levelAgg[l].n,
+    pct:     levelAgg[l].n ? Math.round((levelAgg[l].c / levelAgg[l].n) * 100) : null,
+    reliable: levelAgg[l].n >= 3,
+  }));
+
+  /* The hardest tier still cleared at 60% on at least three items. This
+     is the single most actionable line in the whole profile: it says
+     where teaching needs to start. */
+  const overallCeiling = [3,2,1].find(l => levelAgg[l].n >= 3 && levelAgg[l].c / levelAgg[l].n >= 0.6) || null;
+
+  /* ── Cognitive profile ───────────────────────────────────────────
+     Separates "cannot do the arithmetic" from "can do the arithmetic
+     but cannot decide which arithmetic to do". */
+  const cognitiveProfile = COGNITIVE.map(c => ({
+    ...c,
+    correct: cogAgg[c.id].c,
+    total:   cogAgg[c.id].n,
+    pct:     cogAgg[c.id].n ? Math.round((cogAgg[c.id].c / cogAgg[c.id].n) * 100) : null,
+    reliable: cogAgg[c.id].n >= 3,
+  }));
+
+  /* ── D. Diagnostic weakness map ──────────────────────────────────
+     Domain-level reporting says "weak in Data Interpretation", which no
+     one can teach to. Sub-skill reporting says "weak in Growth Rates",
+     which is a lesson. Only sub-skills with enough items to mean
+     something are surfaced. */
+  const subDomains = [...unitAgg.values()]
+    .map(u => ({
+      ...u,
+      domainName: DOMAINS.find(d => d.id === u.domain)?.short || u.domain,
+      pct: u.n ? Math.round((u.c / u.n) * 100) : null,
+      reliable: u.n >= 3,
+    }))
+    .sort((a, b) => (a.pct ?? 101) - (b.pct ?? 101));
+
+  const weakSubDomains   = subDomains.filter(u => u.reliable && u.pct < 50);
+  const strongSubDomains = subDomains.filter(u => u.reliable && u.pct >= 80).slice().reverse();
+
+  /* ── E. Confidence ───────────────────────────────────────────────── */
+  const tiersCovered = [1,2,3].filter(l => levelAgg[l].n > 0).length;
+
+  /* Accuracy among items the student actually answered. Dividing by the
+     items presented instead would fold the skip rate into the accuracy
+     and report a student who answered twelve of forty and got every one
+     right as a 30% scorer — then penalise them for "guessing". Skipping
+     is already accounted for under Completion; charging for it twice,
+     once as low accuracy, would be wrong in both directions. */
+  const answeredCorrect = correct;             // a skip can never be correct
+  const rawAccuracy = answered ? answeredCorrect / answered : null;
+
+  /* Pace only means anything if every attempt contributed a time. One
+     attempt with no recorded duration would otherwise halve the apparent
+     pace and trigger a penalty for an attempt that was never rushed. */
+  const secPerItem = !anyUntimed && timedSec > 0 && timedItems > 0 ? timedSec / timedItems : null;
+
+  const confidence = computeConfidence({
+    answered,
+    presented,
+    domainsCovered: assessed.length,
+    tiersCovered,
+    byLevel: levelAgg,
+    rawAccuracy,
+    chanceRate: chanceItems ? chanceSum / chanceItems : null,
+    optionsRecorded: chanceItems > 0,
+    secPerItem,
+  });
+
   return {
     domainProfiles, overallPct, overallLevel, strengths, gaps,
     totalSeen: seen, totalCorrect: correct,
     coverage: assessed.length,                 // domains with any evidence
     reliable: seen >= RELIABLE_MIN * 2,
+    /* QAAP 2.0 outputs */
+    difficultyProfile, overallCeiling,
+    cognitiveProfile,
+    subDomains, weakSubDomains, strongSubDomains,
+    confidence,
+    presented, answered, skipped: Math.max(0, presented - answered),
+    /* Unweighted accuracy over answered items only. The headline score
+       counts every item presented, which is the defensible basis for a
+       classification — but where a paper was heavily skipped the two
+       numbers diverge sharply, and a reader is entitled to see both
+       rather than be handed one and told it is the whole story. */
+    answeredAccuracy: answered ? Math.round((correct / answered) * 100) : null,
+    attemptCount: ordered.length,
   };
 }
 
@@ -781,6 +1108,7 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
   const TABS = [
     ["baseline",  "Baseline test"],
     ["dashboard", "Results"],
+    ["profile2",  "Student profiles"],
     ["cohort",    "Heatmap"],
     ["bank",      "Question bank"],
     ["accredit",  "Accreditation"],
@@ -813,6 +1141,7 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
       {tab==="dashboard" && <Dashboard attempts={attempts} questions={questions} quizzes={quizzes} classrooms={classrooms}/>}
       {tab==="levels"    && <LevelsGuide/>}
       {tab==="bank"      && <QuestionInventory questions={questions} setQuestions={setQuestions} toast2={toast2}/>}
+      {tab==="profile2"  && <QAAPF2 attempts={attempts} questions={questions}/>}
       {tab==="cohort"    && <CohortHeatmap attempts={attempts} questions={questions}/>}
       {tab==="accredit"  && <QAAPFEvidence attempts={attempts} questions={questions} quizzes={quizzes} classrooms={classrooms}/>}
     </div>
@@ -1049,10 +1378,17 @@ function Dashboard({ attempts, questions, quizzes, classrooms }) {
     return m;
   }, [attempts]);
 
-  const students = Object.entries(studentMap).map(([id, v]) => {
-    const profile = computeQAAPFProfile(v.attempts, questions);
-    return { id, ...v, profile };
-  }).sort((a,b) => (b.profile.overallPct||0)-(a.profile.overallPct||0));
+  /* Profiling the whole cohort sat in the render body, so selecting a
+     student re-profiled every other student in the class. With a couple
+     of hundred students that is a visible freeze on every click, and it
+     also gave `students` a fresh identity each render, which stopped the
+     memo below it from ever hitting. */
+  const students = useMemo(() =>
+    Object.entries(studentMap).map(([id, v]) => {
+      const profile = computeQAAPFProfile(v.attempts, questions);
+      return { id, ...v, profile };
+    }).sort((a,b) => (b.profile.overallPct||0)-(a.profile.overallPct||0)),
+  [studentMap, questions]);
 
   // Band distribution
   const bandCounts = Q_LEVELS.map(ql => ({
