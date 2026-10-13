@@ -8,7 +8,7 @@
 
    Five outputs, in the order a reader needs them:
 
-     A  Baseline score      what was demonstrated, difficulty-weighted
+     A  Baseline score      % correct against the verified key, with its likely range
      B  Domain profile      which areas are strong and weak
      C  Difficulty profile  where competence stops
      D  Weakness map        which specific sub-skill is failing
@@ -25,11 +25,7 @@ import {
 } from "lucide-react";
 import { card, btnP, btnG, inp, num, Badge, Empty, Stat } from "./ui.jsx";
 import { downloadCSV } from "../lib/csv.js";
-/* QAAPF.jsx imports this file, so this is a cycle. It is safe only
-   because every symbol below is referenced inside a function body and
-   never at module scope — at import time these bindings are still
-   uninitialised, and touching one here would throw. Keep it that way. */
-import { computeQAAPFProfile, DOMAINS, RELIABLE_MIN } from "./QAAPF.jsx";
+import { computeQAAPFProfile, DOMAINS, RELIABLE_MIN, CLUSTER_RELIABLE_MIN, QAAPF_BANK_VERSION } from "../lib/qaapf-core.js";
 
 /* ── Small helpers ─────────────────────────────────────────────── */
 const toneOfPct = (p) =>
@@ -159,9 +155,14 @@ export default function QAAPF2({ attempts, questions }) {
       { label: "CU ID",  value: (s) => s.cu_id },
       { label: "Course", value: (s) => s.course },
       { label: "Baseline %",    value: (s) => s.profile.overallPct ?? "" },
+      { label: "Likely range",  value: (s) => (s.profile.overallRange ? `${s.profile.overallRange[0]}–${s.profile.overallRange[1]}` : "") },
+      { label: "Correct",       value: (s) => s.profile.totalCorrect },
+      { label: "Scored items",  value: (s) => s.profile.totalSeen },
       { label: "Band",          value: (s) => s.profile.overallLevel?.level ?? "" },
       { label: "Band label",    value: (s) => s.profile.overallLevel?.label ?? "" },
       { label: "Accuracy on answered items %", value: (s) => s.profile.answeredAccuracy ?? "" },
+      { label: "Questions reached", value: (s) => s.profile.reached ?? "" },
+      { label: "Speed profile",     value: (s) => s.profile.speedProfile?.label ?? "" },
       { label: "Percentile",    value: (s) => pctileFor(s) ?? "" },
       { label: "Reference population", value: (s) => (scopeIds.has(s.id) ? activeScope?.label ?? "" : "not in selected population") },
       { label: "Ceiling", value: (s) => (s.profile.overallCeiling ? ["", "Easy", "Medium", "Hard"][s.profile.overallCeiling] : "None cleared") },
@@ -173,7 +174,9 @@ export default function QAAPF2({ attempts, questions }) {
       { label: "Items answered",  value: (s) => s.profile.answered },
       { label: "Items skipped",   value: (s) => s.profile.skipped },
       { label: "Weakest sub-skills", value: (s) => s.profile.weakSubDomains.slice(0, 3).map((u) => u.unit).join("; ") },
+      ...(students[0]?.profile.clusterProfiles || []).map((c) => ({ label: `${c.short} %`, value: (s) => s.profile.clusterProfiles.find((p) => p.id === c.id)?.pct ?? "" })),
       ...DOMAINS.map((d) => ({ label: d.short, value: (s) => s.profile.domainProfiles.find((p) => p.id === d.id)?.pct ?? "" })),
+      { label: "Withdrawn faulty items", value: (s) => s.profile.voided.length },
     ]);
 
   if (!students.length)
@@ -318,14 +321,26 @@ function StudentProfile2({ student: s, scopeScores, scopes, scope, setScope, inS
               )}
             </div>
             <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-              Difficulty-weighted, so this reads as the proportion of difficulty mastered rather than the proportion of
-              questions answered. {p.overallLevel?.desc}
+              {p.totalCorrect} of {p.totalSeen} framework questions correct, scored against the verified v{QAAPF_BANK_VERSION} key.
+              {p.overallRange && <> Likely range <strong className={num}>{p.overallRange[0]}–{p.overallRange[1]}%</strong>.</>}{" "}
+              {p.overallLevel?.desc}
             </p>
+            {p.voided.length > 0 && (
+              <p className="mt-1.5 text-[10px] leading-relaxed text-slate-400">
+                {p.voided.length} faulty question{p.voided.length === 1 ? " was" : "s were"} withdrawn from this score (for every student who saw {p.voided.length === 1 ? "it" : "them"}).
+              </p>
+            )}
             {/* Where a paper was heavily skipped the headline figure and
                 the accuracy on what was actually attempted pull apart.
                 Showing only the first would let a skipped paper read as a
                 weak student. */}
-            {p.skipped > 0 && p.answeredAccuracy !== null && (
+            {p.speedProfile ? (
+              <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-sky-900">
+                <strong>Speed and accuracy: {p.speedProfile.label}.</strong> Reached {p.speedProfile.reached} of {p.totalSeen} questions
+                in the time ({p.speedProfile.completionPct}%) and was correct on <strong className={num}>{p.speedProfile.accuracyPct}%</strong> of
+                those attempted.{p.skippedViewed ? ` ${p.skippedViewed} looked at and left blank.` : ""} {p.speedProfile.advice}
+              </div>
+            ) : p.skipped > 0 && p.answeredAccuracy !== null && (
               <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-800">
                 <strong>{p.skipped} item{p.skipped === 1 ? "" : "s"} left unanswered.</strong> On the items actually
                 attempted the student was correct <strong className={num}>{p.answeredAccuracy}%</strong> of the time.
@@ -391,6 +406,7 @@ function StudentProfile2({ student: s, scopeScores, scopes, scope, setScope, inS
                 <span className="font-semibold text-slate-700">{d.label}</span>
                 <span className={`${num} text-slate-500`}>
                   {d.total ? `${d.correct}/${d.total} · ${d.pct}%` : "not assessed"}
+                  {d.notReached > 0 && <span className="ml-1 text-slate-400">· {d.notReached} not reached</span>}
                   {d.total > 0 && !d.reliable && <span className="ml-1 text-amber-600">provisional</span>}
                 </span>
               </div>
@@ -416,14 +432,41 @@ function StudentProfile2({ student: s, scopeScores, scopes, scope, setScope, inS
         </div>
       </div>
 
-      {/* ── B. Domain profile ─────────────────────────────────────── */}
+      {/* ── B. Reporting areas, then domains ──────────────────────── */}
+      <div className={`${card} p-5`}>
+        <div className="mb-1 flex items-center gap-2">
+          <Layers size={15} className="text-violet-600" />
+          <h4 className="text-sm font-bold text-slate-900">Reporting areas</h4>
+        </div>
+        <p className="mb-4 text-[11px] text-slate-500">
+          Four areas, each combining two domains. Use these for grouping decisions; an area under {CLUSTER_RELIABLE_MIN} items is marked provisional, so on the shorter papers treat close calls with care.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {p.clusterProfiles.map((c) => (
+            <div key={c.id} className="rounded-xl border border-slate-100 p-3">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700"><span>{c.icon}</span> {c.name}</span>
+                <span className={`${num} text-xs font-bold text-slate-900`}>{c.pct ?? "—"}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                <div className={`h-full rounded-full ${toneOfPct(c.pct)}`} style={{ width: `${c.pct ?? 0}%` }} />
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
+                <span>{c.total ? `${c.correct}/${c.total} items${c.range ? ` · likely ${c.range[0]}–${c.range[1]}%` : ""}` : "not assessed"}</span>
+                {c.total > 0 && !c.reliable && <span className="text-amber-600">provisional</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className={`${card} p-5`}>
         <div className="mb-1 flex items-center gap-2">
           <Brain size={15} className="text-violet-600" />
           <h4 className="text-sm font-bold text-slate-900">Domain profile</h4>
         </div>
         <p className="mb-4 text-[11px] text-slate-500">
-          Performance across the eight framework domains. Domains below {RELIABLE_MIN} items are marked provisional.
+          The eight framework domains — only a few questions each on a baseline paper, so treat these as pointers rather than findings. Domains below {RELIABLE_MIN} items are marked provisional.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           {p.domainProfiles.map((d) => (
@@ -678,9 +721,11 @@ function printProfile2(s, scopeLabel, pctile) {
     }</div>
   </div>
 </div>
-<div class="note">Scores are difficulty-weighted: harder items carry more weight in both the numerator and the denominator, so the figure reads as the proportion of difficulty mastered rather than the proportion of questions answered.</div>
+<div class="note">Score = ${esc(p.totalCorrect)} of ${esc(p.totalSeen)} framework questions correct, scored against the verified QAAPF bank v${esc(QAAPF_BANK_VERSION)}${p.overallRange ? `; likely range ${p.overallRange[0]}–${p.overallRange[1]}%` : ""}. Difficulty is reported separately below, not folded into the score.${p.voided.length ? ` ${p.voided.length} faulty question${p.voided.length === 1 ? " was" : "s were"} withdrawn from scoring.` : ""}</div>
 ${
-  p.skipped > 0 && p.answeredAccuracy !== null
+  p.speedProfile
+    ? `<div class="box" style="border-color:#bae6fd;background:#f0f9ff"><strong>Speed and accuracy: ${esc(p.speedProfile.label)}.</strong> Reached ${esc(p.speedProfile.reached)} of ${esc(p.totalSeen)} questions in the time (${esc(p.speedProfile.completionPct)}%) and was correct on ${esc(p.speedProfile.accuracyPct)}% of those attempted. ${esc(p.speedProfile.advice)}</div>`
+    : p.skipped > 0 && p.answeredAccuracy !== null
     ? `<div class="box" style="border-color:#fde68a;background:#fffbeb"><strong>${esc(p.skipped)} item${p.skipped === 1 ? "" : "s"} left unanswered.</strong> On the items actually attempted this student was correct ${esc(p.answeredAccuracy)}% of the time. The headline figure counts every item presented; the gap between the two figures is a participation finding, not an ability one.</div>`
     : ""
 }
@@ -723,7 +768,12 @@ ${
   }
 </div>
 
-<h2>B · Domain profile</h2>
+<h2>B · Reporting areas</h2>
+<table>${p.clusterProfiles
+    .map((c) => row(`${c.icon} ${c.name}`, null, c.pct, c.total ? `${c.correct}/${c.total}${c.reliable ? "" : " · provisional"}` : "not assessed"))
+    .join("")}</table>
+
+<h2>Domains (indicative)</h2>
 <table>${p.domainProfiles
     .map((d) => row(`${d.icon} ${d.name}`, null, d.pct, d.total ? `${d.correct}/${d.total}${d.reliable ? "" : " · provisional"}` : "not assessed"))
     .join("")}</table>

@@ -42,7 +42,7 @@ async function retryStrip(table, op, payload, optionalCols) {
 // problem behind apparently-working submissions. `log` is cosmetic
 // (the integrity event list) so it can be shed if the column is absent.
 const ATTEMPT_OPTIONAL  = ["log", "student_course", "student_semester", "student_cu_id", "student_phone", "meta"];
-const QUIZ_OPTIONAL     = ["question_ids", "show_answers_policy", "subject"];
+const QUIZ_OPTIONAL     = ["question_ids", "show_answers_policy", "subject", "purpose"];
 const QUESTION_OPTIONAL = ["subject", "difficulty", "topic", "points"];
 
 
@@ -79,6 +79,14 @@ export async function updateQuestion(id, patch) {
   const { data, error } = await supabase.from("questions").update(patch).eq("id", id).select().single();
   if (error) throw error;
   return data;
+}
+/* Same as updateQuestion, but drops optional columns the database does
+   not have (topic, difficulty…) instead of failing — used when repairing
+   built-in QAAPF questions across deployments of different ages. */
+export async function updateQuestionSafe(id, patch) {
+  return retryStrip("questions",
+    p => supabase.from("questions").update(p).eq("id", id).select().single(),
+    patch, QUESTION_OPTIONAL);
 }
 export async function deleteQuestion(id) {
   const { error } = await supabase.from("questions").delete().eq("id", id);
@@ -324,7 +332,8 @@ export async function removeCoOwner(classroomId, userId) {
 export async function logAudit({ actor_id, actor_name, action, target, meta = {} }) {
   // Best-effort — never let a logging failure break the calling action.
   try {
-    await supabase.from("audit_log").insert({ actor_id, actor_name, action, target, meta });
+    const { error } = await supabase.from("audit_log").insert({ actor_id, actor_name, action, target, meta });
+    if (error) console.warn("[audit] not recorded:", error.message);
   } catch (_) {}
 }
 

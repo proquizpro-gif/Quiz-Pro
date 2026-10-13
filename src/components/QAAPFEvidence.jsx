@@ -30,10 +30,10 @@ import { card, btn, btnP, btnG, inp, num, Badge, Empty, Stat, Toast } from "./ui
 import { downloadCSV } from "../lib/csv.js";
 import { logAudit, fetchAuditLog, fetchClassroomMembers } from "../lib/db.js";
 import { useAuth } from "../lib/AuthContext.jsx";
-/* QAAPF.jsx imports this file, so this is a cycle. Safe only because
-   both symbols are referenced inside function bodies, never at module
-   scope — at import time these bindings are still uninitialised. */
-import { DOMAINS, computeQAAPFProfile } from "./QAAPF.jsx";
+import {
+  DOMAINS, computeQAAPFProfile, rekeyAttempts, isBaselineQuiz, verifiedItemFor,
+  reliableChange, QAAPF_BANK_VERSION,
+} from "../lib/qaapf-core.js";
 
 /* ── Statistics primitives (pure, testable) ───────────────────────── */
 const asc = (a, b) => a - b;
@@ -60,8 +60,8 @@ export const quantile = (a, q) => {
   return s[base + 1] !== undefined ? s[base] + rest * (s[base + 1] - s[base]) : s[base];
 };
 /* Percentile rank of v within arr — % scoring at-or-below, midrank for ties. */
-export const percentileRank = (arr, v) => {
-  if (!arr.length) return null;
+export const percentileRank = (arr, v, minN = 5) => {
+  if (arr.length < minN) return null;
   let below = 0, equal = 0;
   for (const x of arr) { if (x < v) below++; else if (x === v) equal++; }
   return Math.round((100 * (below + 0.5 * equal)) / arr.length);
@@ -75,13 +75,21 @@ const r0 = (x) => (x === null || x === undefined ? null : Math.round(x));
      D  = discrimination    = p(top 27%) − p(bottom 27%) on total score
      distractor split       = % choosing each option, + % unattempted
    Flags are advisory review flags — never auto-deletions.               */
+/* Built-in questions are keyed by their bank ID, so two sections that sat
+   the same paper from different bank copies are analysed together. */
+const itemKey = (it) => verifiedItemFor(it.question)?.id || it.qid || it.question;
+const isRight = (it) => it.chosen !== null && it.chosen !== undefined && Number(it.chosen) === Number(it.correct);
+
 export function itemAnalysis(attempts) {
-  const valid = attempts.filter((a) => Array.isArray(a.items) && a.items.length);
+  const valid = attempts
+    .filter((a) => Array.isArray(a.items) && a.items.length)
+    .map((a) => ({ ...a, items: a.items.filter((it) => !it.void) }));
   const n = valid.length;
   // Rank students by total score for discrimination groups.
   const scored = valid
-    .map((a) => ({ a, sc: a.items.reduce((s, it) => s + (it.chosen === it.correct ? 1 : 0), 0) }))
+    .map((a) => ({ a, sc: a.items.reduce((s, it) => s + (isRight(it) ? 1 : 0), 0) }))
     .sort((x, y) => y.sc - x.sc);
+  const totalOf = new Map(scored.map((x) => [x.a, x.sc]));
   const g = Math.max(1, Math.round(n * 0.27));
   const topSet = new Set(scored.slice(0, g).map((x) => x.a));
   const botSet = new Set(scored.slice(-g).map((x) => x.a));
@@ -89,40 +97,63 @@ export function itemAnalysis(attempts) {
   const byQ = new Map();
   for (const a of valid) {
     const isTop = topSet.has(a), isBot = botSet.has(a);
+    const total = totalOf.get(a) || 0;
     for (const it of a.items) {
-      const key = it.qid || it.question;
+      const key = itemKey(it);
       if (!byQ.has(key)) {
         byQ.set(key, {
-          qid: it.qid, question: it.question, correct: it.correct,
+          qid: it.qid, id: verifiedItemFor(it.question)?.id || null, question: it.question, correct: it.correct,
           options: it.options || [], seen: 0, right: 0,
-          picks: {}, skipped: 0, topN: 0, topR: 0, botN: 0, botR: 0,
+          picks: {}, topPicks: {}, skipped: 0, topN: 0, topR: 0, botN: 0, botR: 0,
+          xs: [], ys: [],
         });
       }
       const r = byQ.get(key);
       r.seen++;
-      const ok = it.chosen === it.correct;
+      const ok = isRight(it);
       if (ok) r.right++;
-      if (it.chosen === null || it.chosen === undefined) r.skipped++;
-      else r.picks[it.chosen] = (r.picks[it.chosen] || 0) + 1;
+      // Option text, not index: different bank copies may order options differently.
+      const pickText = it.chosen === null || it.chosen === undefined ? null : (it.options || [])[it.chosen];
+      if (pickText === null || pickText === undefined) r.skipped++;
+      else {
+        r.picks[pickText] = (r.picks[pickText] || 0) + 1;
+        if (isTop) r.topPicks[pickText] = (r.topPicks[pickText] || 0) + 1;
+      }
+      r.keyText = (it.options || [])[it.correct];
       if (isTop) { r.topN++; if (ok) r.topR++; }
       if (isBot) { r.botN++; if (ok) r.botR++; }
+      r.xs.push(ok ? 1 : 0); r.ys.push(total - (ok ? 1 : 0));   // item vs rest-of-test score
     }
   }
+  const corr = (x, y) => {
+    const k = x.length; if (k < 3) return null;
+    const mx = x.reduce((s, v) => s + v, 0) / k, my = y.reduce((s, v) => s + v, 0) / k;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < k; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
+    return sxx && syy ? sxy / Math.sqrt(sxx * syy) : null;
+  };
 
   const items = [...byQ.values()].map((r) => {
     const p = r.seen ? r.right / r.seen : null;
     const pt = r.topN ? r.topR / r.topN : null;
     const pb = r.botN ? r.botR / r.botN : null;
     const D = pt !== null && pb !== null ? pt - pb : null;
+    const rit = corr(r.xs, r.ys);                         // corrected item–rest correlation
     const flags = [];
     if (p !== null && p >= 0.95) flags.push("Very easy");
     if (p !== null && p <= 0.2) flags.push("Very hard");
-    if (D !== null && D < 0.1 && r.seen >= 10) flags.push("Poor discrimination");
-    if (D !== null && D < 0 && r.seen >= 10) flags.push("Negative discrimination");
+    if (rit !== null && rit < 0.15 && r.seen >= 10) flags.push("Poor discrimination");
+    if (rit !== null && rit < 0 && r.seen >= 10) flags.push("Negative discrimination");
+    /* Possible wrong key: the strongest students prefer a distractor to
+       the keyed answer. On a sound item they almost never do. */
+    const keyTop = r.topPicks[r.keyText] || 0;
+    const rival = Object.entries(r.topPicks).filter(([t]) => t !== r.keyText).sort((a, b) => b[1] - a[1])[0];
+    if (r.topN >= 5 && rival && rival[1] > keyTop) flags.push(`Check key: top group prefers "${String(rival[0]).slice(0, 24)}"`);
     // Non-functioning distractor: a wrong option almost nobody picked.
-    const nfd = (r.options || []).some((_, i) => i !== r.correct && r.seen >= 20 && (r.picks[i] || 0) / r.seen < 0.02);
+    const nfd = (r.options || []).some((o) => o !== r.keyText && r.seen >= 20 && (r.picks[o] || 0) / r.seen < 0.02);
     if (nfd) flags.push("Non-functioning distractor");
-    return { ...r, p, D, flags };
+    const { xs, ys, ...rest } = r;
+    return { ...rest, p, D, rit, flags };
   });
   return { n, items, groupSize: g };
 }
@@ -133,13 +164,15 @@ export function itemAnalysis(attempts) {
    person×item matrix is complete. Returns {ok:false, reason} when the
    sample is too small — we never invent a coefficient.                  */
 export function reliability(attempts, { minStudents = 10, minItems = 5 } = {}) {
-  const valid = attempts.filter((a) => Array.isArray(a.items) && a.items.length);
+  const valid = attempts
+    .filter((a) => Array.isArray(a.items) && a.items.length)
+    .map((a) => ({ ...a, items: a.items.filter((it) => !it.void) }));
   if (valid.length < minStudents)
     return { ok: false, reason: `Only ${valid.length} valid responses — below the ${minStudents} needed for a stable estimate.`, nStudents: valid.length };
   // Common item set.
   let common = null;
   for (const a of valid) {
-    const ids = new Set(a.items.map((it) => it.qid || it.question));
+    const ids = new Set(a.items.map(itemKey));
     common = common === null ? ids : new Set([...common].filter((x) => ids.has(x)));
   }
   const itemIds = [...(common || [])];
@@ -148,7 +181,7 @@ export function reliability(attempts, { minStudents = 10, minItems = 5 } = {}) {
 
   // Build 0/1 matrix on the common items.
   const matrix = valid.map((a) => {
-    const m = new Map(a.items.map((it) => [it.qid || it.question, it.chosen === it.correct ? 1 : 0]));
+    const m = new Map(a.items.map((it) => [itemKey(it), isRight(it) ? 1 : 0]));
     return itemIds.map((id) => m.get(id) || 0);
   });
   const k = itemIds.length, N = matrix.length;
@@ -177,8 +210,11 @@ export function reliability(attempts, { minStudents = 10, minItems = 5 } = {}) {
   const sdTotal = stdev(totals);
   const sem = alpha !== null && sdTotal !== null ? sdTotal * Math.sqrt(1 - alpha) : null;
 
+  /* Coefficient alpha from a small class moves a lot from one sample to
+     the next; say how much weight it can bear. */
+  const stability = N >= 100 ? "stable" : N >= 30 ? "indicative" : "very unstable";
   return {
-    ok: true, nStudents: N, nItems: k, alpha, splitHalf, sem,
+    ok: true, nStudents: N, nItems: k, alpha, splitHalf, sem, stability,
     semPct: sem !== null ? (sem / k) * 100 : null,
     meanTotal: mean(totals), sdTotal,
   };
@@ -188,14 +224,18 @@ export function reliability(attempts, { minStudents = 10, minItems = 5 } = {}) {
    Persisted per-browser. Every generated register stamps the config
    version + values in effect, so historical classification is never
    silently rewritten when someone edits the bands later.               */
+/* Aligned with the Q-level cut-points (Q1 | Q2 | Q3 | Q4 | Q5–Q6), so a
+   student's intervention category never contradicts their band.
+   v3 key: per-browser edits made against the old, misaligned defaults
+   are not carried over. */
 const DEFAULT_BANDS = [
-  { key: "critical",  label: "Critical Intervention", min: 0,  max: 30,  tone: "bg-rose-100 text-rose-700 border-rose-200" },
-  { key: "needs",     label: "Needs Intervention",    min: 31, max: 45,  tone: "bg-orange-100 text-orange-700 border-orange-200" },
-  { key: "developing",label: "Developing",            min: 46, max: 60,  tone: "bg-amber-100 text-amber-700 border-amber-200" },
-  { key: "proficient",label: "Proficient",            min: 61, max: 75,  tone: "bg-violet-100 text-violet-700 border-violet-200" },
-  { key: "advanced",  label: "Advanced",              min: 76, max: 100, tone: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  { key: "critical",  label: "Critical Intervention (Q1)", min: 0,  max: 24,  tone: "bg-rose-100 text-rose-700 border-rose-200" },
+  { key: "needs",     label: "Needs Intervention (Q2)",    min: 25, max: 44,  tone: "bg-orange-100 text-orange-700 border-orange-200" },
+  { key: "developing",label: "Developing (Q3)",            min: 45, max: 59,  tone: "bg-amber-100 text-amber-700 border-amber-200" },
+  { key: "proficient",label: "Proficient (Q4)",            min: 60, max: 74,  tone: "bg-violet-100 text-violet-700 border-violet-200" },
+  { key: "advanced",  label: "Advanced (Q5–Q6)",           min: 75, max: 100, tone: "bg-emerald-100 text-emerald-700 border-emerald-200" },
 ];
-const BANDS_KEY = "qaapf.bands.v2";
+const BANDS_KEY = "qaapf.bands.v3";
 function loadBands() {
   try {
     const raw = JSON.parse(localStorage.getItem(BANDS_KEY) || "null");
@@ -249,25 +289,32 @@ export default function QAAPFEvidence({ attempts, questions, quizzes, classrooms
     return [...s].sort((a, b) => b - a);
   }, [attempts]);
 
-  const [quizId, setQuizId] = useState("all");
+  const hasBaseline = useMemo(() => (quizzes || []).some(isBaselineQuiz), [quizzes]);
+  const [quizId, setQuizId] = useState(() => ((quizzes || []).some(isBaselineQuiz) ? "baseline" : "all"));
+  const quizById = useMemo(() => new Map((quizzes || []).map((q) => [q.id, q])), [quizzes]);
   const [roomId, setRoomId] = useState("all");
   const [year, setYear] = useState("all");
 
-  const scoped = useMemo(() => {
+  const scopedRaw = useMemo(() => {
     return (attempts || []).filter((a) => {
-      if (quizId !== "all" && a.quiz_id !== quizId) return false;
+      if (quizId === "baseline") { if (!isBaselineQuiz(quizById.get(a.quiz_id))) return false; }
+      else if (quizId !== "all" && a.quiz_id !== quizId) return false;
       if (roomId !== "all" && roomOf[a.quiz_id] !== roomId) return false;
       if (year !== "all" && (!a.submitted_at || new Date(a.submitted_at).getFullYear() !== Number(year))) return false;
       return true;
     });
-  }, [attempts, quizId, roomId, year, roomOf]);
+  }, [attempts, quizId, roomId, year, roomOf, quizById]);
+
+  /* Every figure below uses the verified key: built-in questions are
+     re-keyed against the bank and faulty earlier items are withdrawn. */
+  const scoped = useMemo(() => rekeyAttempts(scopedRaw, questions), [scopedRaw, questions]);
 
   // ── One baseline row per student (earliest attempt in scope) ──
   const rows = useMemo(() => buildRows(scoped, questions, bandsCfg.bands), [scoped, questions, bandsCfg]);
 
   const scopeLabel = useMemo(() => {
     const parts = [];
-    parts.push(quizId === "all" ? "All assessments" : (quizzes.find((q) => q.id === quizId)?.title || "Assessment"));
+    parts.push(quizId === "all" ? "All assessments" : quizId === "baseline" ? "All baseline papers" : (quizzes.find((q) => q.id === quizId)?.title || "Assessment"));
     if (roomId !== "all") parts.push(classrooms.find((c) => c.id === roomId)?.name || "Section");
     if (year !== "all") parts.push(String(year));
     return parts.join(" · ");
@@ -294,6 +341,7 @@ export default function QAAPFEvidence({ attempts, questions, quizzes, classrooms
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Scope</span>
           <select value={quizId} onChange={(e) => setQuizId(e.target.value)} className={`${inp} !w-auto !py-1.5 text-xs`}>
+            {hasBaseline && <option value="baseline">All baseline papers</option>}
             <option value="all">All assessments</option>
             {(quizzes || []).map((q) => <option key={q.id} value={q.id}>{q.title}</option>)}
           </select>
@@ -349,8 +397,9 @@ function buildRows(scoped, questions, bands) {
     list.sort((x, y) => new Date(x.submitted_at) - new Date(y.submitted_at));
     const baseline = list[0], latest = list[list.length - 1];
     const bProfile = computeQAAPFProfile([baseline], questions);
-    const it = baseline.items || [];
-    const correct = it.filter((x) => x.chosen === x.correct).length;
+    const lProfile = list.length > 1 ? computeQAAPFProfile([latest], questions) : null;
+    const it = (baseline.items || []).filter((x) => !x.void);
+    const correct = it.filter((x) => x.chosen !== null && x.chosen !== undefined && Number(x.chosen) === Number(x.correct)).length;
     const answered = it.filter((x) => x.chosen !== null && x.chosen !== undefined).length;
     rows.push({
       uid,
@@ -359,8 +408,10 @@ function buildRows(scoped, questions, bands) {
       cu_id: baseline.meta?.cu_id || baseline.student_cu_id || "—",
       semester: baseline.meta?.semester || baseline.student_semester || "—",
       roomId: null,
-      baseline, latest, attemptCount: list.length,
-      pct: baseline.percent ?? bProfile.overallPct ?? 0,
+      baseline, latest, attemptCount: list.length, latestProfile: lProfile,
+      /* The QAAPF score when the paper carries framework questions;
+         otherwise the attempt's own percentage, recomputed on the verified key. */
+      pct: bProfile.overallPct ?? baseline.rekey?.percent ?? baseline.percent ?? 0,
       qlevel: bProfile.overallLevel,
       profile: bProfile,
       totalQ: it.length, answered, correct, incorrect: answered - correct, skipped: it.length - answered,
@@ -370,7 +421,7 @@ function buildRows(scoped, questions, bands) {
   }
   const pctArr = rows.map((r) => r.pct);
   for (const r of rows) {
-    r.percentile = percentileRank(pctArr, r.pct);
+    r.percentile = percentileRank(pctArr, r.pct);           // null below five students
     r.band = bandFor(r.pct, bands);
   }
   return rows.sort((a, b) => b.pct - a.pct);
@@ -566,7 +617,7 @@ function EvPending({ rows, classrooms, roomId, quizId, quizzes, setRoomId }) {
     { label: "Name", value: (m) => m.profile?.full_name || "—" },
     { label: "Email", value: (m) => m.profile?.email || "—" },
     { label: "Section", value: () => room?.name || "" },
-    { label: "Assessment", value: () => (quizId === "all" ? "Any QAAPF" : quizzes.find((q) => q.id === quizId)?.title || "") },
+    { label: "Assessment", value: () => (quizId === "all" ? "Any QAAPF" : quizId === "baseline" ? "Baseline paper" : quizzes.find((q) => q.id === quizId)?.title || "") },
     { label: "Status", value: () => "Not attempted" },
   ]);
 
@@ -784,16 +835,23 @@ function EvCohort({ scoped, questions, classrooms, roomOf, bandsCfg }) {
 function EvProgress({ rows, scopeLabel }) {
   const multi = rows.filter((r) => r.attemptCount >= 2);
   const prog = multi.map((r) => {
-    const pre = r.baseline.percent ?? 0, post = r.latest.percent ?? 0;
+    const bp = r.profile, lp = r.latestProfile;
+    const pre = bp?.overallPct ?? r.baseline.rekey?.percent ?? r.baseline.percent ?? 0;
+    const post = lp?.overallPct ?? r.latest.rekey?.percent ?? r.latest.percent ?? 0;
     const abs = post - pre;
     const relPct = pre > 0 ? Math.round(((post - pre) / pre) * 100) : null;
     const gain = 100 - pre > 0 ? Math.round(((post - pre) / (100 - pre)) * 100) : null; // normalized gain
-    return { ...r, pre, post, abs, relPct, gain };
+    /* A change only counts when it is larger than the two scores'
+       measurement error would produce on its own. */
+    const rc = bp?.totalSeen && lp?.totalSeen
+      ? reliableChange(bp.totalCorrect, bp.totalSeen, lp.totalCorrect, lp.totalSeen)
+      : { status: "na" };
+    return { ...r, pre, post, abs, relPct, gain, change: rc.status };
   }).sort((a, b) => b.abs - a.abs);
 
-  const improved = prog.filter((p) => p.abs > 0).length;
-  const same = prog.filter((p) => p.abs === 0).length;
-  const declined = prog.filter((p) => p.abs < 0).length;
+  const improved = prog.filter((p) => p.change === "improved").length;
+  const same = prog.filter((p) => p.change === "within-error" || p.change === "na").length;
+  const declined = prog.filter((p) => p.change === "declined").length;
   const absArr = prog.map((p) => p.abs);
 
   return (
@@ -801,15 +859,17 @@ function EvProgress({ rows, scopeLabel }) {
       <div className={`${card} p-3.5 text-xs text-slate-500`}>
         Progress compares each student's <b>earliest</b> attempt (baseline) with their <b>latest</b> attempt in scope.
         It appears only for students with two or more assessments — {multi.length} of {rows.length} here.
+        A student counts as improved or declined only when the change is larger than measurement error (two-proportion test, 95%);
+        smaller changes are reported as no reliable change. Compare papers built from the same blueprint.
       </div>
       {!prog.length ? (
         <Empty icon={TrendingUp} title="No students with a second assessment yet" hint="Run a midline / post assessment, then progress will populate here automatically." />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-            <Stat icon={TrendingUp} label="Improved" value={improved} tone="emerald" />
-            <Stat icon={ClipboardList} label="Unchanged" value={same} />
-            <Stat icon={AlertTriangle} label="Declined" value={declined} tone={declined ? "rose" : "slate"} />
+            <Stat icon={TrendingUp} label="Reliably improved" value={improved} tone="emerald" />
+            <Stat icon={ClipboardList} label="No reliable change" value={same} />
+            <Stat icon={AlertTriangle} label="Reliably declined" value={declined} tone={declined ? "rose" : "slate"} />
             <Stat icon={Award} label="Avg gain" value={`${absArr.length ? (r1(mean(absArr)) > 0 ? "+" : "") + r1(mean(absArr)) : "—"} pts`} tone="sky" />
             <Stat icon={Award} label="Median gain" value={`${r0(median(absArr)) ?? "—"} pts`} tone="violet" />
           </div>
@@ -820,11 +880,12 @@ function EvProgress({ rows, scopeLabel }) {
                 { label: "Name", value: (p) => p.name }, { label: "Baseline %", value: (p) => p.pre },
                 { label: "Latest %", value: (p) => p.post }, { label: "Absolute gain", value: (p) => p.abs },
                 { label: "% improvement", value: (p) => p.relPct ?? "" }, { label: "Normalized gain %", value: (p) => p.gain ?? "" },
+                { label: "Reliable change", value: (p) => p.change },
               ])} className={`${btnG} !py-1.5 !px-3 !text-xs`}><FileDown size={13} /> Export</button>
             </div>
             <table className="w-full text-xs">
               <thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
-                <tr><th className="px-3 py-2.5">Student</th><th className="px-2 py-2.5 text-center">Baseline</th><th className="px-2 py-2.5 text-center">Latest</th><th className="px-2 py-2.5 text-center">Δ pts</th><th className="px-2 py-2.5 text-center">% impr</th><th className="px-2 py-2.5 text-center" title="Normalized gain = (post−pre)/(100−pre)">Norm. gain</th></tr>
+                <tr><th className="px-3 py-2.5">Student</th><th className="px-2 py-2.5 text-center">Baseline</th><th className="px-2 py-2.5 text-center">Latest</th><th className="px-2 py-2.5 text-center">Δ pts</th><th className="px-2 py-2.5 text-center">% impr</th><th className="px-2 py-2.5 text-center" title="Normalized gain = (post−pre)/(100−pre)">Norm. gain</th><th className="px-2 py-2.5 text-center">Reliable?</th></tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {prog.map((p) => (
@@ -835,6 +896,7 @@ function EvProgress({ rows, scopeLabel }) {
                     <td className={`px-2 py-2 text-center font-bold ${num} ${p.abs > 0 ? "text-emerald-600" : p.abs < 0 ? "text-rose-600" : "text-slate-400"}`}>{p.abs > 0 ? "+" : ""}{p.abs}</td>
                     <td className={`px-2 py-2 text-center ${num} text-slate-500`}>{p.relPct == null ? "—" : `${p.relPct > 0 ? "+" : ""}${p.relPct}%`}</td>
                     <td className={`px-2 py-2 text-center ${num} text-slate-500`}>{p.gain == null ? "—" : `${p.gain}%`}</td>
+                    <td className="px-2 py-2 text-center text-[10px] font-semibold">{p.change === "improved" ? <span className="text-emerald-600">Improved</span> : p.change === "declined" ? <span className="text-rose-600">Declined</span> : <span className="text-slate-400">Within error</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -856,8 +918,8 @@ function EvQuality({ scoped, quizId, quizzes, setQuizId }) {
   if (quizId === "all")
     return (
       <div className={`${card} p-6`}>
-        <Empty icon={FlaskConical} title="Pick one assessment for item analysis"
-          hint="Item difficulty, discrimination and reliability are only meaningful within a single assessment. Choose one in the scope bar." />
+        <Empty icon={FlaskConical} title="Pick an assessment for item analysis"
+          hint="Item difficulty, discrimination and reliability are only meaningful within one paper. Choose a quiz, or All baseline papers, in the scope bar." />
         <div className="mt-4 flex flex-wrap justify-center gap-2">
           {(quizzes || []).slice(0, 8).map((q) => <button key={q.id} onClick={() => setQuizId(q.id)} className={`${btnG} !py-1.5 !px-3 !text-xs`}>{q.title}</button>)}
         </div>
@@ -885,7 +947,11 @@ function EvQuality({ scoped, quizId, quizzes, setQuizId }) {
               <Stat icon={Users} label="n × items" value={`${rel.nStudents}×${rel.nItems}`} />
             </div>
             <p className="mt-3 text-[11px] text-slate-400">
-              Computed on the {rel.nItems} items common to all {rel.nStudents} complete responses. α ≥ 0.70 is a common rule of thumb for internal consistency; interpret cautiously with small samples.
+              Computed on the {rel.nItems} items common to all {rel.nStudents} complete responses, scored against the verified key; withdrawn items excluded.
+              α ≥ 0.70 is a common rule of thumb for internal consistency.{" "}
+              <b className={rel.stability === "stable" ? "text-emerald-600" : rel.stability === "indicative" ? "text-amber-600" : "text-rose-600"}>
+                With {rel.nStudents} students this estimate is {rel.stability}{rel.stability !== "stable" ? " — it can move substantially with a larger group (about 100 students gives a stable figure)" : ""}.
+              </b>
             </p>
           </>
         )}
@@ -899,6 +965,8 @@ function EvQuality({ scoped, quizId, quizzes, setQuizId }) {
             { label: "Question", value: (i) => (i.question || "").slice(0, 120) },
             { label: "Seen", value: (i) => i.seen }, { label: "Difficulty p", value: (i) => (i.p == null ? "" : i.p.toFixed(2)) },
             { label: "Discrimination D", value: (i) => (i.D == null ? "" : i.D.toFixed(2)) },
+            { label: "Item-rest r", value: (i) => (i.rit == null ? "" : i.rit.toFixed(2)) },
+            { label: "Bank ID", value: (i) => i.id || "" },
             { label: "Skipped %", value: (i) => (i.seen ? Math.round((i.skipped / i.seen) * 100) : "") },
             { label: "Flags", value: (i) => i.flags.join("; ") },
           ])} className={`${btnG} !py-1.5 !px-3 !text-xs`}><FileDown size={13} /> Export</button>
@@ -911,15 +979,16 @@ function EvQuality({ scoped, quizId, quizzes, setQuizId }) {
         <div className="overflow-auto max-h-[60vh]">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-500">
-              <tr><th className="px-3 py-2.5">Question</th><th className="px-2 py-2.5 text-center">Seen</th><th className="px-2 py-2.5 text-center" title="Difficulty index: fraction correct">p</th><th className="px-2 py-2.5 text-center" title="Discrimination: top 27% − bottom 27%">D</th><th className="px-2 py-2.5 text-center">Skip%</th><th className="px-3 py-2.5">Flags</th></tr>
+              <tr><th className="px-3 py-2.5">Question</th><th className="px-2 py-2.5 text-center">Seen</th><th className="px-2 py-2.5 text-center" title="Difficulty index: fraction correct">p</th><th className="px-2 py-2.5 text-center" title="Discrimination: top 27% − bottom 27%">D</th><th className="px-2 py-2.5 text-center" title="Correlation between this item and the rest of the paper (≥ 0.20 is good)">r</th><th className="px-2 py-2.5 text-center">Skip%</th><th className="px-3 py-2.5">Flags</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {ia.items.map((i, k) => (
                 <tr key={k} className="hover:bg-slate-50 align-top">
-                  <td className="px-3 py-2 text-slate-700 max-w-md">{(i.question || "—").slice(0, 90)}{(i.question || "").length > 90 ? "…" : ""}</td>
+                  <td className="px-3 py-2 text-slate-700 max-w-md">{i.id && <span className="mr-1.5 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold text-slate-500">{i.id}</span>}{(i.question || "—").slice(0, 90)}{(i.question || "").length > 90 ? "…" : ""}</td>
                   <td className={`px-2 py-2 text-center ${num} text-slate-400`}>{i.seen}</td>
                   <td className={`px-2 py-2 text-center font-bold ${num} ${i.p == null ? "text-slate-300" : i.p >= 0.85 ? "text-emerald-600" : i.p <= 0.3 ? "text-rose-600" : "text-slate-600"}`}>{i.p == null ? "—" : i.p.toFixed(2)}</td>
                   <td className={`px-2 py-2 text-center font-bold ${num} ${i.D == null ? "text-slate-300" : i.D < 0.1 ? "text-rose-600" : i.D >= 0.3 ? "text-emerald-600" : "text-amber-600"}`}>{i.D == null ? "—" : i.D.toFixed(2)}</td>
+                  <td className={`px-2 py-2 text-center font-bold ${num} ${i.rit == null ? "text-slate-300" : i.rit < 0.15 ? "text-rose-600" : i.rit >= 0.3 ? "text-emerald-600" : "text-amber-600"}`}>{i.rit == null ? "—" : i.rit.toFixed(2)}</td>
                   <td className={`px-2 py-2 text-center ${num} text-slate-400`}>{i.seen ? Math.round((i.skipped / i.seen) * 100) : 0}</td>
                   <td className="px-3 py-2">{i.flags.length ? <div className="flex flex-wrap gap-1">{i.flags.map((f) => <span key={f} className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{f}</span>)}</div> : <span className="text-emerald-500 text-[11px]">ok</span>}</td>
                 </tr>
@@ -998,7 +1067,7 @@ function EvVisitPack({ rows, scoped, questions, quizzes, classrooms, bandsCfg, s
     const registerStr = rows.map((r) => `${r.name}|${r.cu_id}|${r.pct}|${r.band?.label}`).join("\n");
     const hash = await fingerprint(reportId + "\n" + registerStr);
     logAudit({ actor_id: user?.id, actor_name: profile?.full_name, action: "report.generate", target: `Visit-Ready Pack (${framework})`, meta: { reportId, scope: scopeLabel, students: rows.length, hash } });
-    openVisitPack({ rows, scores, ia, rel, framework, institution, scopeLabel, bandsCfg, reportId, hash, generatedBy: profile?.full_name || "—", quizTitle: quizId === "all" ? "All QAAPF assessments" : (quizzes.find((q) => q.id === quizId)?.title || "—") });
+    openVisitPack({ rows, scores, ia, rel, framework, institution, scopeLabel, bandsCfg, reportId, hash, generatedBy: profile?.full_name || "—", quizTitle: quizId === "all" ? "All QAAPF assessments" : quizId === "baseline" ? "All baseline papers" : (quizzes.find((q) => q.id === quizId)?.title || "—") });
     toast2("Visit pack opened — print or save as PDF");
     setBusy(false);
   };
@@ -1165,7 +1234,7 @@ function openStudentEvidenceReport(r, scopeLabel) {
     <p><b>Strengths:</b> ${esc(strengths)}</p>
     <p><b>Development gaps:</b> ${esc(gaps)}</p>
     <p class="muted">Recommended focus follows the gap order above. A non-assessed domain means the baseline drew too few items in that domain to judge — not a zero.</p>
-    <div class="stamp">Generated ${new Date().toLocaleString()} · This report was produced from the institutional QAAPF assessment database. Domain bands reflect difficulty-weighted performance.</div>
+    <div class="stamp">Generated ${new Date().toLocaleString()} · This report was produced from the institutional QAAPF assessment database. Scores are the percentage correct against the verified QAAPF bank v${QAAPF_BANK_VERSION}; faulty earlier items are withdrawn.</div>
   `);
 }
 
@@ -1198,7 +1267,7 @@ function openVisitPack({ rows, scores, ia, rel, framework, institution, scopeLab
     <p class="muted">${esc(institution)} administers QAAPF as an internal diagnostic to establish the entry aptitude baseline of students prior to structured intervention. This pack documents coverage, distribution, domain-level gaps and assessment quality for the selected cohort. QAAPF is not represented as a metric mandated by ${esc(framework)}; it is institutional evidence supporting ${esc(framework)}'s existing quality themes.</p>
 
     <h2>2 · Assessment blueprint</h2>
-    <p>Eight OECD-PIAAC-grounded domains, six proficiency bands (Q1–Q6), difficulty-weighted scoring. Assessment: <b>${esc(quizTitle)}</b>.</p>
+    <p>Eight domains in four reporting areas, informed by the OECD PIAAC numeracy content areas; six proficiency bands (Q1–Q6); percentage-correct scoring against a verified key. Assessment: <b>${esc(quizTitle)}</b>.</p>
 
     <h2>3 · Student coverage & baseline distribution</h2>
     <table><thead><tr><th>Category</th><th class="c">Range</th><th class="c">Students</th><th class="c">Share</th></tr></thead><tbody>${bandRows}</tbody></table>

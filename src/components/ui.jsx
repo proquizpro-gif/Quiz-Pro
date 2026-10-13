@@ -29,7 +29,9 @@ export const vTone = (input) => {
 };
 
 /* ── Helpers ───────────────────────────────────────────────────── */
-export const shuffle    = (arr) => [...arr].sort(() => Math.random() - 0.5);
+export const shuffle    = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+/* local-time value for <input type="datetime-local"> (toISOString is UTC and shifts IST by 5h30m) */
+export const toLocalInput = (v) => { const d = new Date(v); if (isNaN(d)) return ""; const p = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 export const fmtTime    = (sec) => `${Math.floor(sec/60).toString().padStart(2,"0")}:${(sec%60).toString().padStart(2,"0")}`;
 export const dateStr    = (iso) => iso ? new Date(iso).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}) : "—";
 export const dateTimeStr= (iso) => iso ? new Date(iso).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "—";

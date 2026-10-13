@@ -22,12 +22,13 @@ import { downloadCSV } from "./lib/csv";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
 import QAAPFPanel, { computeQAAPFProfile, Q_LEVELS, getQLevel } from "./components/QAAPF.jsx";
+import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, QAAPF_BANK_VERSION } from "./lib/qaapf-core.js";
 import LiveInvigilation from "./components/LiveInvigilation.jsx";
 import AdminPanel from "./components/AdminPanel";
 import ClassroomManager from "./components/Classrooms";
 import {
   card, cardH, btn, btnP, btnG, btnGld, inp, num, vTone,
-  fmtTime, pct, shuffle, dateStr, dateTimeStr,
+  fmtTime, pct, shuffle, toLocalInput, dateStr, dateTimeStr,
   fsElement, enterFs, exitFs, buildLeaderboard, quizAvailability,
   Stat, Badge, Empty, Toast, ScoreBar, Spinner,
 } from "./components/ui";
@@ -1062,7 +1063,7 @@ function QuizManager({ questions, quizzes, setQuizzes, attempts, classrooms, onO
 function ReopenModal({ quiz, onCancel, onConfirm }) {
   const [mode, setMode] = useState("extend");
   const [newClose, setNewClose] = useState(() => {
-    const d = new Date(Date.now() + 24*60*60*1000); d.setSeconds(0,0); return d.toISOString().slice(0,16);
+    const d = new Date(Date.now() + 24*60*60*1000); d.setSeconds(0,0); return toLocalInput(d);
   });
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
@@ -1101,8 +1102,8 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
   const [minutes,     setMinutes]     = useState(Math.round((quiz.duration_sec || 300) / 60));
   const [maxAttempts, setMaxAttempts] = useState(quiz.max_attempts || 1);
   const [classroomId, setClassroomId] = useState(quiz.classroom_id || "");
-  const [openAt,      setOpenAt]      = useState(quiz.open_at  ? new Date(quiz.open_at).toISOString().slice(0,16)  : "");
-  const [closeAt,     setCloseAt]     = useState(quiz.close_at ? new Date(quiz.close_at).toISOString().slice(0,16) : "");
+  const [openAt,      setOpenAt]      = useState(quiz.open_at  ? toLocalInput(quiz.open_at)  : "");
+  const [closeAt,     setCloseAt]     = useState(quiz.close_at ? toLocalInput(quiz.close_at) : "");
   const [isOpen,      setIsOpen]      = useState(quiz.is_open !== false);
   const [policy,      setPolicy]      = useState(quiz.show_answers_policy || "after_close");
   const [saving,      setSaving]      = useState(false);
@@ -1703,6 +1704,7 @@ function printQuizPaper(quiz, questions, { withKey }) {
 }
 
 function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profiles, onBack }) {
+  const isBaseline = isBaselineQuiz(quiz);
   const room = classrooms.find(c => c.id === quiz.classroom_id);
   const at  = attempts.filter(a => a.quiz_id === quiz.id).sort((a,b) => b.percent-a.percent);
   const avg = at.length ? Math.round(at.reduce((s,a)=>s+a.percent,0)/at.length) : 0;
@@ -1781,7 +1783,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="violet">Week {quiz.week}</Badge>
+            {isBaseline ? <Badge tone="violet">Diagnostic baseline</Badge> : <Badge tone="violet">Week {quiz.week}</Badge>}
             <Badge tone={room?"sky":"amber"}><School size={11}/> {room?`${room.name}${room.section?` · ${room.section}`:""}${room.year?` (${room.year})`:""}` : "All students"}</Badge>
             {creatorName && <span className="text-xs text-slate-400">by {creatorName}</span>}
           </div>
@@ -2062,10 +2064,10 @@ function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classr
   startQuizRef.current = startQuiz;
 
   if (needsProfile && activeQuiz) return <StudentProfileModal userId={user.id} onSave={meta=>{ setStudentMeta(meta); setNeedsProfile(false); setScreen("rules"); }}/>;
-  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile.full_name} userId={user.id} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
+  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile?.full_name} userId={user.id} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
   if (screen==="exam"   && activeQuiz) return <Exam questions={questions} quiz={activeQuiz} user={user} profile={profile} attempts={attempts} onSubmit={onSubmit} onAbort={() => setScreen("home")}/>;
-  if (screen==="result" && lastAttempt) return <Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} name={profile.full_name} onHome={() => setScreen("home")}/>;
-  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile.full_name} userId={user.id} onStart={startQuiz} deepLinkMsg={deepLinkMsg} onDismissDeepLink={()=>setDeepLinkMsg(null)}/>;
+  if (screen==="result" && lastAttempt) return <Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} name={profile?.full_name} onHome={() => setScreen("home")}/>;
+  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile?.full_name} userId={user.id} onStart={startQuiz} deepLinkMsg={deepLinkMsg} onDismissDeepLink={()=>setDeepLinkMsg(null)}/>;
 }
 
 function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, setClassrooms, name, userId, onStart, deepLinkMsg, onDismissDeepLink }) {
@@ -2161,7 +2163,7 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
       {/* QAAPF mini-profile for student */}
       {myAll.length > 0 && (() => {
         let profile;
-        try { profile = computeQAAPFProfile(myAll, questions); }
+        try { profile = computeQAAPFProfile(selectProfileAttempts(myAll, quizzes).attempts, questions); }
         catch (e) { console.error("QAAPF profile failed:", e); return null; }
         if (profile.overallPct === null) return null;
         const lvl = profile.overallLevel;
@@ -2171,20 +2173,21 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
               <div><h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><Brain size={15} className="text-violet-600"/> Your aptitude profile</h3><p className="text-xs text-slate-400 mt-0.5">QAAPF — Quantitative & Analytical Aptitude Proficiency Framework</p></div>
               {lvl && <div className={`rounded-xl border px-4 py-2 text-center ${lvl.light}`}><div className="text-lg font-extrabold">{lvl.level}</div><div className="text-xs font-semibold">{lvl.label}</div></div>}
             </div>
+            <p className="mb-3 text-xs text-slate-500">{profile.totalCorrect} of {profile.totalSeen} correct · {profile.overallPct}%{profile.overallRange ? ` (likely ${profile.overallRange[0]}–${profile.overallRange[1]}%)` : ""}</p>
             <div className="grid gap-2 sm:grid-cols-4">
-              {profile.domainProfiles.filter(d=>d.pct!==null).map(d=>(
-                <div key={d.id} className="rounded-xl bg-slate-50 border border-slate-100 p-2.5">
-                  <div className="text-xs font-semibold text-slate-600 flex items-center gap-1">{d.icon} {d.short}</div>
-                  <div className={`text-lg font-extrabold ${d.pct>=70?"text-emerald-600":d.pct>=50?"text-amber-600":"text-rose-600"}`}>{d.pct}%</div>
-                  <div className={`text-[10px] font-semibold ${d.level?.light.split(" ").slice(2).join(" ")}`}>{d.level?.level}</div>
-                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200"><div className={`h-full rounded-full ${d.pct>=70?"bg-emerald-500":d.pct>=50?"bg-amber-400":"bg-rose-500"}`} style={{width:`${d.pct}%`}}/></div>
+              {profile.clusterProfiles.filter(c=>c.pct!==null).map(c=>(
+                <div key={c.id} className="rounded-xl bg-slate-50 border border-slate-100 p-2.5">
+                  <div className="text-xs font-semibold text-slate-600 flex items-center gap-1">{c.icon} {c.short}</div>
+                  <div className={`text-lg font-extrabold ${c.pct>=70?"text-emerald-600":c.pct>=50?"text-amber-600":"text-rose-600"}`}>{c.pct}%</div>
+                  <div className="text-[10px] text-slate-400">{c.correct}/{c.total} correct</div>
+                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200"><div className={`h-full rounded-full ${c.pct>=70?"bg-emerald-500":c.pct>=50?"bg-amber-400":"bg-rose-500"}`} style={{width:`${c.pct}%`}}/></div>
                 </div>
               ))}
             </div>
-            {profile.gaps.length > 0 && (
+            {(profile.weakSubDomains.length > 0 || profile.gaps.length > 0) && (
               <div className="mt-3 rounded-xl bg-rose-50 border border-rose-100 p-3">
                 <p className="text-xs font-bold text-rose-700 mb-1">Focus areas for improvement:</p>
-                <p className="text-[11px] text-rose-600">{profile.gaps.map(d=>`${d.icon} ${d.name}`).join(" · ")}</p>
+                <p className="text-[11px] text-rose-600">{profile.weakSubDomains.length ? profile.weakSubDomains.slice(0, 4).map(u=>u.unit).join(" · ") : profile.gaps.map(d=>`${d.icon} ${d.name}`).join(" · ")}</p>
               </div>
             )}
           </div>
@@ -2319,26 +2322,41 @@ function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
     : questions.filter(b => (quiz.units||[]).includes(b.unit)).length;
   const myAttempts = attempts.filter(a => a.quiz_id === quiz.id && a.user_id === userId).length;
   const isRetake = myAttempts > 0;
+  const isBaseline = isBaselineQuiz(quiz);
+  const rules = isBaseline
+    ? [
+        [ListChecks, `${quiz.draw_count} questions on numbers, commercial arithmetic, patterns, algebra, data, reasoning and problem solving. They start easier and get harder.`],
+        [CheckCircle2, "There is no negative marking. An unanswered question scores the same as a wrong one, so if time is running out, answer the rest rather than leave them blank."],
+        [BookOpen, "Use rough paper for working. Calculators and phones are not allowed; none of the questions needs one."],
+        [Clock, `A race against the clock: ${Math.round(quiz.duration_sec/60)} minutes for ${quiz.draw_count} questions — about ${Math.round(quiz.duration_sec / Math.max(1, quiz.draw_count))} seconds each. If a question takes more than a minute, mark it for review and move on; come back if time allows. A pace marker shows whether you are ahead or behind. Auto-submits when time runs out.`],
+        [ShieldCheck, "Goes fullscreen. Leaving locks the paper — the screen goes blank until you return. 5 violations auto-submit it."],
+      ]
+    : [
+        [ListChecks, `${quiz.draw_count} questions, randomly drawn from ${pool} and unique to your session.`],
+        [Clock, `${Math.round(quiz.duration_sec/60)} minutes. Auto-submits when time runs out.`],
+        [ShieldCheck, "Goes fullscreen. Leaving locks the quiz — the screen goes blank until you return."],
+        [AlertTriangle, "5 violations auto-submit your quiz. Split-screen, floating windows, and app switching are all detected."],
+        [Eye, "You can see the integrity log live next to the questions."],
+      ];
   return (
     <div className="mx-auto max-w-lg pt-6">
       <button className={`${btnG} mb-4`} onClick={onBack}><ChevronLeft size={15}/> Back</button>
       <div className={`${card} overflow-hidden`}>
         <div className="bg-gradient-to-br from-violet-50 to-white px-6 pt-6">
           <div className="flex items-center gap-1.5">
-            <Badge tone="violet">Week {quiz.week}</Badge>
+            {isBaseline ? <Badge tone="violet">Diagnostic baseline</Badge> : <Badge tone="violet">Week {quiz.week}</Badge>}
             {isRetake && <Badge tone="amber">Retake — attempt {myAttempts + 1} of {quiz.max_attempts}</Badge>}
           </div>
           <h3 className="mt-2 text-xl font-extrabold text-slate-900">{quiz.title}</h3>
           <p className="mt-1 text-sm text-slate-500">Signed in as <strong>{name}</strong></p>
         </div>
         <div className="space-y-3 p-6 text-sm">
-          {[
-            [ListChecks, `${quiz.draw_count} questions, randomly drawn from ${pool} and unique to your session.`],
-            [Clock, `${Math.round(quiz.duration_sec/60)} minutes. Auto-submits when time runs out.`],
-            [ShieldCheck, "Goes fullscreen. Leaving locks the quiz — the screen goes blank until you return."],
-            [AlertTriangle, "5 violations auto-submit your quiz. Split-screen, floating windows, and app switching are all detected."],
-            [Eye, "You can see the integrity log live next to the questions."],
-          ].map(([Icon, text], i) => (
+          {isBaseline && (
+            <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-4 text-xs leading-relaxed text-violet-800">
+              This is a diagnostic, not a graded test. It shows your teachers where to start, so work on your own and do your honest best.
+            </div>
+          )}
+          {rules.map(([Icon, text], i) => (
             <div key={i} className="flex items-start gap-3">
               <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600"><Icon size={15}/></span>
               <p className="text-slate-600 leading-relaxed">{text}</p>
@@ -2360,6 +2378,7 @@ function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
 /* ── Proctored Exam ───────────────────────────────────────────────── */
 function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   const containerRef = useRef(null);
+  const isBaselinePaper = isBaselineQuiz(quiz);
   const dKey = draftKey(quiz.id, user.id);
 
   // ── localStorage backup / restore ──────────────────────────────
@@ -2377,26 +2396,43 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     return null;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [drawn] = useState(() => {
-    if (restored) return restored.drawn;
-    // If quiz was created with exact question_ids, serve those specifically
+  /* The saved draft holds question IDs and option orders only — never
+     question text or answer keys — and is rebuilt from the bank on
+     restore. Drafts saved by the previous version (full questions) are
+     still accepted so nobody loses a paper in progress. */
+  const optionOrder = q => shuffle((Array.isArray(q.options) ? q.options : []).map((_, i) => i));
+  const [init] = useState(() => {
+    if (restored) {
+      if (Array.isArray(restored.drawn) && restored.drawn.length) return { drawn: restored.drawn, fromDraft: true };
+      if (Array.isArray(restored.ids) && restored.ids.length) {
+        const byId = new Map(questions.map(q => [q.id, q]));
+        const rows = restored.ids.map((id, i) => ({ q: byId.get(id), order: restored.orders?.[i] }));
+        if (rows.every(r => r.q && Array.isArray(r.order) && r.order.length === r.q.options.length)) return { drawn: rows, fromDraft: true };
+      }
+    }
+    // A quiz created with exact question_ids serves those specifically.
     if (Array.isArray(quiz.question_ids) && quiz.question_ids.length > 0) {
       const wanted = new Set(quiz.question_ids);
       const pool = questions.filter(b => wanted.has(b.id));
-      return shuffle(pool).map(q => ({ q, order: shuffle([0,1,2,3]) }));
+      /* Baseline papers run easy → medium → hard, shuffled within each
+         block; other quizzes are fully shuffled. */
+      const ordered = isBaselineQuiz(quiz) ? orderBaselinePaper(pool) : shuffle(pool);
+      return { drawn: ordered.map(q => ({ q, order: optionOrder(q) })), fromDraft: false };
     }
     // Legacy: random draw from units
     const pool = questions.filter(b => (quiz.units||[]).includes(b.unit));
-    return shuffle(pool).slice(0, quiz.draw_count).map(q => ({ q, order: shuffle([0,1,2,3]) }));
+    return { drawn: shuffle(pool).slice(0, quiz.draw_count).map(q => ({ q, order: optionOrder(q) })), fromDraft: false };
   });
-  const [answers, setAnswers]       = useState(() => restored?.answers ?? drawn.map(() => null));
+  const drawn = init.drawn;
+  const draft = init.fromDraft ? restored : null;
+  const [answers, setAnswers]       = useState(() => (Array.isArray(draft?.answers) && draft.answers.length === drawn.length ? draft.answers : drawn.map(() => null)));
   // "Mark for review" — standard in NTA/GRE/GMAT interfaces. Students
   // park an uncertain question and come back rather than burning time.
-  const [flagged, setFlagged]       = useState(() => new Set(restored?.flagged ?? []));
+  const [flagged, setFlagged]       = useState(() => new Set(draft?.flagged ?? []));
   const [online, setOnline]         = useState(() => navigator.onLine !== false);
   const [idx, setIdx]               = useState(0);
-  const [remaining, setRemaining]   = useState(() => restored?.remaining ?? quiz.duration_sec);
-  const [log, setLog]               = useState(() => restored?.log ?? []);
+  const [remaining, setRemaining]   = useState(() => draft?.remaining ?? quiz.duration_sec);
+  const [log, setLog]               = useState(() => draft?.log ?? []);
   const [banner, setBanner]         = useState(null);
   const [fsBlocked, setFsBlocked]   = useState(false);
   const [submitted, setSubmitted]   = useState(false);
@@ -2409,11 +2445,28 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   const cleanupRef = useRef(null);   // { cleanup, unlock }
   const finishRef = useRef(null);    // always-current ref to finish()
 
+  /* Time spent on each question, so answers given faster than a
+     question can be read show up in the confidence rating. Time while
+     the quiz is locked (student away) is not counted. */
+  const dwellRef   = useRef(Array.isArray(draft?.dwell) && draft.dwell.length === drawn.length ? draft.dwell.slice() : drawn.map(() => 0));
+  const shownAtRef = useRef(Date.now());
+  const idxRef     = useRef(0);
+  const pausedRef  = useRef(false);
+  const flushDwell = () => {
+    const now = Date.now();
+    if (!pausedRef.current) dwellRef.current[idxRef.current] += now - shownAtRef.current;
+    shownAtRef.current = now;
+  };
+
   // Persist a snapshot to localStorage on every meaningful change.
   useEffect(() => {
     if (submitted) return;
     try {
-      localStorage.setItem(dKey, JSON.stringify({ quizId: quiz.id, drawn, answers, flagged: [...flagged], remaining, log, savedAt: Date.now() }));
+      localStorage.setItem(dKey, JSON.stringify({
+        quizId: quiz.id,
+        ids: drawn.map(d => d.q.id), orders: drawn.map(d => d.order),
+        answers, flagged: [...flagged], remaining, log, dwell: dwellRef.current, savedAt: Date.now(),
+      }));
     } catch (_) {}
   }, [answers, flagged, remaining, log, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2491,14 +2544,25 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     return () => clearTimeout(id);
   }, [remaining, submitted]);
 
+  useEffect(() => { if (idxRef.current !== idx) { flushDwell(); idxRef.current = idx; } }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (locked) { flushDwell(); pausedRef.current = true; }
+    else { pausedRef.current = false; shownAtRef.current = Date.now(); }
+  }, [locked]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const choose = origIdx => setAnswers(a => { const n=[...a]; n[idx]=origIdx; return n; });
 
   const buildAttemptPayload = useCallback(() => {
     let score = 0, maxScore = 0;
+    flushDwell();
     const items = drawn.map((d, i) => {
-      maxScore += d.q.points;
-      if (answers[i] === d.q.correct) score += d.q.points;
-      return { qid: d.q.id, question: d.q.question, options: d.q.options, correct: d.q.correct, chosen: answers[i] };
+      const pts = Number(d.q.points) || 1;
+      maxScore += pts;
+      if (answers[i] === d.q.correct) score += pts;
+      return {
+        qid: d.q.id, question: d.q.question, options: d.q.options, correct: d.q.correct, chosen: answers[i],
+        sec: Math.round((dwellRef.current[i] || 0) / 1000), pos: i, shown: d.order,
+      };
     });
     const used = quiz.duration_sec - remaining;
     const attemptNumber = attempts.filter(a => a.quiz_id === quiz.id && a.user_id === user.id).length + 1;
@@ -2687,10 +2751,24 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
       <div className="mx-auto max-w-5xl px-4 py-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-300"><ShieldCheck size={15} className="text-violet-400"/> {quiz.title}</div>
+          {isBaselinePaper && drawn.length > 0 && (() => {
+            /* Race pace: where the student should be by now at an even
+               pace, against how many questions they have answered. */
+            const perQ = quiz.duration_sec / drawn.length;
+            const expected = Math.min(drawn.length, Math.floor((quiz.duration_sec - remaining) / perQ));
+            const diff = answered - expected;
+            return (
+              <div className={`ml-auto mr-3 hidden items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold sm:flex ${diff >= 0 ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}
+                   title={`Target: about ${Math.round(perQ)} seconds a question`}>
+                {diff >= 0 ? `On pace${diff > 0 ? ` · ${diff} ahead` : ""}` : `${-diff} behind pace`}
+                <span className="font-normal text-slate-400">· {Math.round(perQ)}s per question</span>
+              </div>
+            );
+          })()}
           <div className={`flex items-center gap-2 rounded-xl px-4 py-2 text-lg font-extrabold ${num} transition-colors ${low?"bg-rose-500/20 text-rose-300":"bg-slate-800 text-slate-100"}`}><Clock size={15} className={low?"text-rose-400":"text-slate-400"}/> {fmtTime(remaining)}</div>
         </div>
 
-        {restored && idx === 0 && answered > 0 && (
+        {draft && idx === 0 && answered > 0 && (
           <div className="mt-4 flex items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm font-medium text-violet-200">
             <CheckCircle2 size={15}/> Restored your progress from before — you had {answered} question{answered===1?"":"s"} answered.
           </div>
@@ -2724,7 +2802,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
                   return (
                     <button key={origIdx} onClick={() => choose(origIdx)}
                       className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3.5 text-left text-sm font-medium transition-all ${sel?"border-violet-400 bg-violet-500/20 text-white":"border-slate-700 bg-slate-900/40 text-slate-200 hover:border-slate-500"}`}>
-                      <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-bold transition ${sel?"bg-violet-500 text-white":"bg-slate-700 text-slate-300"}`}>{"ABCD"[pos]}</span>
+                      <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-bold transition ${sel?"bg-violet-500 text-white":"bg-slate-700 text-slate-300"}`}>{"ABCDEFGH"[pos]}</span>
                       {cur.q.options[origIdx]}
                     </button>
                   );
@@ -2857,24 +2935,34 @@ function Result({ quizzes, attempt, attempts, name, onHome }) {
   const showAnswers = policy === "immediate" || (policy === "after_close" && windowShut);
   const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
   const rank   = board.findIndex(s => s.student === name);
-  const honors = attempt.percent >= 80;
-  const passed = attempt.percent >= 60;
-  const head   = honors ? "bg-gradient-to-br from-amber-400 to-amber-500" : passed ? "bg-gradient-to-br from-emerald-500 to-emerald-600" : "bg-gradient-to-br from-slate-600 to-slate-700";
+  const isBaseline = isBaselineQuiz(srcQuiz);
+  /* Built-in questions are shown and counted against the verified key;
+     faulty earlier questions are marked as withdrawn, not wrong. */
+  const rk = useMemo(() => rekeyAttempt(attempt, null), [attempt]);
+  const rescored = !!rk?.rekey?.changed;
+  const shownPct = rescored && rk.rekey.percent !== null ? rk.rekey.percent : attempt.percent;
+  const shownCorrect = rescored ? rk.rekey.correct : attempt.score;
+  const shownTotal = rescored ? rk.rekey.scored : attempt.max_score;
+  const honors = !isBaseline && shownPct >= 80;
+  const passed = !isBaseline && shownPct >= 60;
+  const head   = isBaseline ? "bg-gradient-to-br from-violet-600 to-indigo-700" : honors ? "bg-gradient-to-br from-amber-400 to-amber-500" : passed ? "bg-gradient-to-br from-emerald-500 to-emerald-600" : "bg-gradient-to-br from-slate-600 to-slate-700";
 
   return (
     <div className="mx-auto max-w-2xl space-y-5 pt-6">
       <div className={`${card} overflow-hidden`}>
         <div className={`px-6 py-10 text-center text-white ${head}`}>
           <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-white/20 mb-3">
-            {honors?<Sparkles size={28}/>:passed?<CheckCircle2 size={28}/>:<AlertTriangle size={28}/>}
+            {isBaseline?<CheckCircle2 size={28}/>:honors?<Sparkles size={28}/>:passed?<CheckCircle2 size={28}/>:<AlertTriangle size={28}/>}
           </div>
-          <div className="text-xs font-bold uppercase tracking-widest text-white/80">{honors?"Honors result":passed?"Passed":"Keep going"}</div>
-          <div className={`mt-2 text-7xl font-extrabold ${num}`}>{attempt.percent}%</div>
-          <p className="mt-1 text-sm text-white/80">{attempt.score} of {attempt.max_score} correct</p>
+          <div className="text-xs font-bold uppercase tracking-widest text-white/80">{isBaseline?"Baseline recorded":honors?"Honors result":passed?"Passed":"Keep going"}</div>
+          <div className={`mt-2 text-7xl font-extrabold ${num}`}>{shownPct}%</div>
+          <p className="mt-1 text-sm text-white/80">{shownCorrect} of {shownTotal} correct</p>
+          {isBaseline && <p className="mx-auto mt-2 max-w-sm text-xs text-white/70">This is a starting point, not a grade. Your teachers use it to plan support; your full aptitude profile appears on your dashboard.</p>}
+          {rescored && <p className="mx-auto mt-2 max-w-sm text-[11px] text-white/60">Rescored against the verified answer key (bank v{QAAPF_BANK_VERSION}){rk.rekey.voided ? `; ${rk.rekey.voided} faulty question${rk.rekey.voided === 1 ? " was" : "s were"} withdrawn` : ""}.</p>}
           <p className="mt-0.5 text-xs text-white/60">Attempt {attempt.attempt_number} · Completed in {fmtTime(attempt.time_used_sec)}</p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2 border-b border-slate-100 py-4">
-          {rank >= 0 && <Badge tone="violet">Class rank #{rank+1} of {board.length}</Badge>}
+          {rank >= 0 && !isBaseline && <Badge tone="violet">Class rank #{rank+1} of {board.length}</Badge>}
           <Badge tone={vTone(attempt.violations)}>{attempt.violations} integrity flag{attempt.violations===1?"":"s"}</Badge>
         </div>
         <div className="px-6 py-4">
@@ -2901,8 +2989,14 @@ function Result({ quizzes, attempt, attempts, name, onHome }) {
         <div className={`${card} p-5`}>
           <h4 className="mb-4 text-sm font-bold text-slate-900">Answer review</h4>
           <div className="space-y-3">
-            {attempt.items.map((it, i) => {
+            {(rk?.items || attempt.items).map((it, i) => {
               const right = it.chosen === it.correct;
+              if (it.void) return (
+                <div key={i} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-500">{it.question}</p>
+                  <p className="mt-1.5 text-xs text-slate-400">Withdrawn from scoring — this version of the question was faulty ({it.voidReason}). It does not count for or against anyone.</p>
+                </div>
+              );
               return (
                 <div key={i} className={`rounded-xl border p-4 ${right?"border-emerald-100 bg-emerald-50/30":"border-rose-100 bg-rose-50/20"}`}>
                   <div className="flex items-start gap-2.5">
