@@ -45,12 +45,54 @@ const ATTEMPT_OPTIONAL  = ["log", "student_course", "student_semester", "student
 const QUIZ_OPTIONAL     = ["question_ids", "show_answers_policy", "subject", "purpose"];
 const QUESTION_OPTIONAL = ["subject", "difficulty", "topic", "points"];
 
+/* ── Reading past the 1,000-row cap ───────────────────────────────
+   Supabase returns at most `max_rows` rows per request (1,000 by
+   default) and says nothing when it truncates. A bank of 589 built-in
+   questions plus a teacher's own, or a term's worth of attempts,
+   crosses that line and rows silently vanish from every screen.
+
+   Pages are read until one comes back empty rather than until one
+   comes back short, so a project configured with a lower max_rows is
+   still read in full. Callers order by a unique column last so pages
+   neither overlap nor skip. */
+const PAGE = 1000;
+async function fetchAllRows(build) {
+  const out = [];
+  let from = 0;
+  for (let guard = 0; guard < 500; guard++) {
+    const { data, error } = await build().range(from, from + PAGE - 1);
+    if (error) throw error;
+    const rows = data || [];
+    if (!rows.length) break;
+    out.push(...rows);
+    from += rows.length;
+  }
+  return out;
+}
+
 
 /* ── Questions ─────────────────────────────────────────────────── */
 export async function fetchQuestions() {
-  const { data, error } = await supabase.from("questions").select("*").order("unit", { ascending: true });
-  if (error) throw error;
-  return data;
+  return fetchAllRows(() => supabase.from("questions").select("*")
+    .order("unit", { ascending: true }).order("id", { ascending: true }));
+}
+
+/* The questions of one quiz, without answer keys, from the quiz_paper
+   function that STEP6 adds. Once STEP6 is run, students can no longer
+   read the questions table (the answer key lives there), so this is
+   how the exam screen gets its paper.
+
+   Returns null when the function does not exist, so callers fall back
+   to the question list they already hold — the app keeps working on a
+   database where STEP6 has not been run. */
+export async function fetchQuizPaper(quizId) {
+  const { data, error } = await supabase.rpc("quiz_paper", { p_quiz_id: quizId });
+  if (error) {
+    const missing = error.code === "PGRST202" || error.code === "42883" || /could not find the function|does not exist/i.test(error.message || "");
+    if (missing) return null;
+    throw error;
+  }
+  return Array.isArray(data) ? data : null;
 }
 export async function insertQuestion(q) {
   const { data, error } = await supabase.from("questions").insert(q).select().single();
@@ -104,9 +146,8 @@ export async function deleteQuestions(ids) {
 
 /* ── Quizzes ────────────────────────────────────────────────────── */
 export async function fetchQuizzes() {
-  const { data, error } = await supabase.from("quizzes").select("*").order("week", { ascending: true });
-  if (error) throw error;
-  return data;
+  return fetchAllRows(() => supabase.from("quizzes").select("*")
+    .order("week", { ascending: true }).order("id", { ascending: true }));
 }
 export async function insertQuiz(quiz) {
   return retryStrip("quizzes",
@@ -125,16 +166,55 @@ export async function deleteQuiz(id) {
 
 /* ── Attempts ───────────────────────────────────────────────────── */
 export async function fetchAttempts() {
-  const { data, error } = await supabase.from("attempts").select("*").order("submitted_at", { ascending: false });
-  if (error) throw error;
-  return data;
+  return fetchAllRows(() => supabase.from("attempts").select("*")
+    .order("submitted_at", { ascending: false }).order("id", { ascending: true }));
 }
 export async function fetchMyAttempts(userId) {
-  const { data, error } = await supabase.from("attempts").select("*").eq("user_id", userId).order("submitted_at", { ascending: false });
-  if (error) throw error;
-  return data;
+  return fetchAllRows(() => supabase.from("attempts").select("*").eq("user_id", userId)
+    .order("submitted_at", { ascending: false }).order("id", { ascending: true }));
 }
-export async function insertAttempt(attempt) {
+
+/* Attempts submitted recently, for the faculty dashboard's refresh.
+   The dashboard used to re-download every attempt every 20 seconds —
+   each one carrying its full question list — which on a test day is
+   megabytes per refresh per open tab and quickly eats the free tier's
+   bandwidth. Only ids are read for the window; full rows are fetched
+   just for the ones the dashboard has not seen.
+
+   The window is generous (a day) because, until STEP6 is run,
+   submitted_at comes from the student's own clock, which can be off. */
+export async function fetchNewAttempts(knownIds, windowHours = 24) {
+  const since = new Date(Date.now() - windowHours * 3600 * 1000).toISOString();
+  const { data, error } = await supabase.from("attempts").select("id").gte("submitted_at", since).limit(5000);
+  if (error) throw error;
+  const missing = (data || []).map(r => r.id).filter(id => !knownIds.has(id));
+  if (!missing.length) return [];
+  const rows = [];
+  for (let i = 0; i < missing.length; i += 200) {
+    const { data: part, error: e2 } = await supabase.from("attempts").select("*").in("id", missing.slice(i, i + 200));
+    if (e2) throw e2;
+    rows.push(...(part || []));
+  }
+  return rows;
+}
+
+/* Saving a finished paper must be safe to repeat. When the network
+   drops after the database has stored the attempt but before the reply
+   arrives, the student sees an error and presses Retry — which used to
+   store the same paper twice, counting as two attempts. Each sitting
+   now carries a token in meta.client_attempt_id; a retry first looks
+   for an attempt with that token and returns it instead of inserting
+   again. Works whatever type the attempts.id column is. */
+export async function insertAttempt(attempt, { retry = false } = {}) {
+  const token = attempt?.meta?.client_attempt_id;
+  if (retry && token) {
+    try {
+      const { data } = await supabase.from("attempts").select("*")
+        .eq("quiz_id", attempt.quiz_id).eq("user_id", attempt.user_id)
+        .contains("meta", { client_attempt_id: token }).limit(1);
+      if (data && data.length) return data[0];
+    } catch (_) { /* meta column absent — fall through and insert */ }
+  }
   return retryStrip("attempts",
     p => supabase.from("attempts").insert(p).select().single(),
     attempt, ATTEMPT_OPTIONAL);
@@ -181,6 +261,17 @@ export async function fetchAllProfiles(page = 0, pageSize = 50, search = "") {
 
   if (error) throw error;
   return { data: data || [], count: count || 0 };
+}
+
+/* Exact head counts per role. The admin panel used to fetch every
+   profile and count in the browser, which stops at 1,000 rows. */
+export async function countProfilesByRole() {
+  const roles = ["admin", "faculty", "student"];
+  const res = await Promise.all(roles.map(r =>
+    supabase.from("profiles").select("id", { count: "exact", head: true }).eq("role", r)));
+  const out = {};
+  res.forEach(({ count, error }, i) => { if (error) throw error; out[roles[i]] = count || 0; });
+  return out;
 }
 
 export async function updateProfileRole(id, role) {
@@ -416,13 +507,30 @@ export async function startLiveSession(row) {
   }
 }
 
+/* status is always re-asserted as active: `pagehide` marks a session
+   abandoned, and on phones it also fires when the browser is merely
+   backgrounded and later resumed. Without this the student showed as
+   "Left the exam" for the rest of the sitting while still writing. */
 export async function touchLiveSession(quizId, userId, patch) {
   try {
     await supabase
       .from("live_sessions")
-      .update({ ...patch, last_seen: new Date().toISOString() })
+      .update({ ...patch, status: "active", last_seen: new Date().toISOString() })
       .eq("quiz_id", quizId).eq("user_id", userId);
   } catch (_) { /* observability only */ }
+}
+
+/* The student's own session row for a quiz, or null. Used to anchor the
+   exam clock to the server: a sitting that was started, closed and
+   reopened keeps counting down from when it really began. */
+export async function fetchMyLiveSession(quizId, userId) {
+  try {
+    const { data, error } = await supabase
+      .from("live_sessions").select("*")
+      .eq("quiz_id", quizId).eq("user_id", userId).limit(1);
+    if (error) throw error;
+    return data?.[0] || null;
+  } catch (_) { return null; }
 }
 
 export async function endLiveSession(quizId, userId, status = "submitted") {

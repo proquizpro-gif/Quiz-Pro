@@ -38,22 +38,36 @@ export function parseCorrectAnswer(raw) {
   return { value: null, error: `"${s}" isn't a recognised answer — use 0, 1, 2, 3 or A, B, C, D` };
 }
 
+/* First non-blank cell among several possible column names. The old
+   `a || b || ""` chain treated a numeric 0 as missing, so a question
+   whose answer option was the number 0 ("What is 5 − 5?") was rejected
+   as having an empty option. */
+const pick = (r, keys, fallback = "") => {
+  for (const k of keys) {
+    const v = r[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+  }
+  return fallback;
+};
+const normText = t => String(t || "").trim().toLowerCase().replace(/\s+/g, " ");
+
 export function parseWorkbook(data, existing = []) {
   try {
     const wb = XLSX.read(data, { type: "array" });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rawRows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-    const existingTexts = new Set((existing || []).map(q => q.question?.trim().toLowerCase()));
+    const existingTexts = new Set((existing || []).map(q => normText(q.question)));
+    const seenInFile = new Map();   // question text → first row number
     const rows = rawRows.map((r, idx) => {
       const errors = [], notes = [];
-      const question   = (r.question   || r.Question   || r.QUESTION   || "").toString().trim();
-      const subject    = (r.subject    || r.Subject    || r.SUBJECT    || "").toString().trim();
-      const unit       = (r.unit       || r.Unit       || r.UNIT       || "General").toString().trim();
-      const topic      = (r.topic      || r.Topic      || r.TOPIC      || "General").toString().trim();
-      const optA       = (r.optionA    || r.OptionA    || r.option_a   || r.A || "").toString().trim();
-      const optB       = (r.optionB    || r.OptionB    || r.option_b   || r.B || "").toString().trim();
-      const optC       = (r.optionC    || r.OptionC    || r.option_c   || r.C || "").toString().trim();
-      const optD       = (r.optionD    || r.OptionD    || r.option_d   || r.D || "").toString().trim();
+      const question   = pick(r, ["question", "Question", "QUESTION"]);
+      const subject    = pick(r, ["subject", "Subject", "SUBJECT"]);
+      const unit       = pick(r, ["unit", "Unit", "UNIT"], "General");
+      const topic      = pick(r, ["topic", "Topic", "TOPIC"], "General");
+      const optA       = pick(r, ["optionA", "OptionA", "option_a", "A"]);
+      const optB       = pick(r, ["optionB", "OptionB", "option_b", "B"]);
+      const optC       = pick(r, ["optionC", "OptionC", "option_c", "C"]);
+      const optD       = pick(r, ["optionD", "OptionD", "option_d", "D"]);
       const { value: correct, error: correctErr } = parseCorrectAnswer(r.correct ?? r.Correct ?? r.CORRECT);
       const points     = parseInt(r.points  ?? r.Points  ?? r.POINTS  ?? 1, 10)  || 1;
       let difficulty   = (r.difficulty || r.Difficulty || r.DIFFICULTY || "medium").toString().trim().toLowerCase();
@@ -62,8 +76,13 @@ export function parseWorkbook(data, existing = []) {
       if (!optA || !optB || !optC || !optD) errors.push("All 4 options (A–D) required");
       if (correctErr) errors.push(correctErr);
       if (!subject)   notes.push("No subject — recommended");
-      const dup = existingTexts.has(question.toLowerCase());
+      if (new Set([optA, optB, optC, optD].map(normText)).size < 4 && optA && optB && optC && optD) errors.push("Two options are identical");
+      const key = normText(question);
+      const dup = existingTexts.has(key);
       if (dup)        notes.push("already in bank");
+      const firstRow = question ? seenInFile.get(key) : undefined;
+      if (question && firstRow === undefined) seenInFile.set(key, idx + 2);
+      if (firstRow !== undefined && !dup) errors.push(`Same question as row ${firstRow}`);
       const parsed = errors.length || dup ? null : { question, subject, unit, topic, difficulty, options: [optA, optB, optC, optD], correct, points };
       return { rowNum: idx + 2, question, parsed, dup, errors, notes };
     }).filter(r => r.question || r.errors.length);

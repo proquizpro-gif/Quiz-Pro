@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import {
   Users, Upload, Download, Plus, Search, Trash2, ChevronLeft,
   ShieldCheck, Clock, AlertTriangle, CheckCircle2, XCircle, Eye, Play, Trophy,
@@ -6,26 +6,32 @@ import {
   LogOut, AlertCircle, RotateCcw,
   PlayCircle, PauseCircle, CalendarClock, FileDown, ShieldAlert,
   School, LogIn, Edit3, Save, GraduationCap,
-  Target, Copy, Printer, Flag, Wifi, WifiOff, Brain, Radio,
+  Target, Copy, Printer, Flag, WifiOff, Brain, Radio,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { configMissing } from "./lib/supabase";
 import {
   fetchQuestions, insertQuestion, insertQuestions, updateQuestion, deleteQuestion, deleteQuestions,
   fetchQuizzes, insertQuiz, updateQuiz, deleteQuiz,
-  fetchAttempts, fetchMyAttempts, insertAttempt,
+  fetchAttempts, fetchMyAttempts, fetchNewAttempts, insertAttempt, fetchQuizPaper,
   fetchMyClassrooms, joinClassroomByCode, leaveClassroomAsStudent,
   logAudit, subscribeToAttempts,
-  startLiveSession, touchLiveSession, endLiveSession,
+  startLiveSession, touchLiveSession, endLiveSession, fetchMyLiveSession,
 } from "./lib/db";
 import { downloadCSV } from "./lib/csv";
+import { examClock, remainingAt, quizSettingsProblem } from "./lib/exam-logic.js";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
-import QAAPFPanel, { computeQAAPFProfile, Q_LEVELS, getQLevel } from "./components/QAAPF.jsx";
-import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, QAAPF_BANK_VERSION } from "./lib/qaapf-core.js";
+import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, rekeyAttempts, QAAPF_BANK_VERSION, computeQAAPFProfile, getQLevel } from "./lib/qaapf-core.js";
 import LiveInvigilation from "./components/LiveInvigilation.jsx";
-import AdminPanel from "./components/AdminPanel";
-import ClassroomManager from "./components/Classrooms";
+
+/* Faculty and admin screens load on first use, so a student's phone
+   does not download the QAAPF analytics, admin panel and classroom
+   manager it will never show. */
+const QAAPFPanel       = lazy(() => import("./components/QAAPF.jsx"));
+const AdminPanel       = lazy(() => import("./components/AdminPanel"));
+const ClassroomManager = lazy(() => import("./components/Classrooms"));
+const PanelLoading = () => <div className="grid place-items-center py-16"><Spinner/></div>;
 import {
   card, cardH, btn, btnP, btnG, btnGld, inp, num, vTone,
   fmtTime, pct, shuffle, toLocalInput, dateStr, dateTimeStr,
@@ -138,9 +144,14 @@ function AppInner() {
   const [dataReady, setDataReady] = useState(false);
   const [dataError, setDataError] = useState("");
   const [view, setView] = useState("main"); // 'main' | 'admin'
+  const attemptsRef = useRef(attempts);
+  attemptsRef.current = attempts;
 
+  const userId = user?.id ?? null;
   useEffect(() => {
-    if (!user) return;
+    if (!userId) return;
+    let cancelled = false;   // a stale load must never overwrite a newer one
+    setDataReady(false); setDataError("");
     pingKeepAlive(); // secondary keep-alive — see lib/keepalive.js
     (async () => {
       // allSettled, not all: one slow or failing query (say classrooms)
@@ -150,9 +161,10 @@ function AppInner() {
       const [qs, qzs, ats, crs] = await Promise.allSettled([
         fetchQuestions(),
         fetchQuizzes(),
-        isFaculty ? fetchAttempts() : fetchMyAttempts(user.id),
+        isFaculty ? fetchAttempts() : fetchMyAttempts(userId),
         fetchMyClassrooms(),
       ]);
+      if (cancelled) return;
       if (qs.status  === "fulfilled") setQuestions(qs.value);
       if (qzs.status === "fulfilled") setQuizzes(qzs.value);
       if (ats.status === "fulfilled") setAttempts(ats.value);
@@ -161,7 +173,8 @@ function AppInner() {
       if (failed.length) setDataError(failed[0].reason?.message || "Some data could not be loaded.");
       setDataReady(true);
     })();
-  }, [user, isFaculty]);
+    return () => { cancelled = true; };
+  }, [userId, isFaculty]);
 
   // Faculty attempt freshness — two independent mechanisms so a score
   // never fails to appear:
@@ -183,16 +196,23 @@ function AppInner() {
       setAttempts(prev => prev.some(a => a.id === newAttempt.id) ? prev : [newAttempt, ...prev]);
     });
 
-    const poll = setInterval(async () => {
-      try { merge(await fetchAttempts()); } catch (_) { /* transient */ }
-    }, 20000);
+    /* Ask only for attempts this tab has not seen. Skipped while the tab
+       is hidden: nobody is looking, and the focus handler catches up. */
+    let busy = false;
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      try { merge(await fetchNewAttempts(new Set(attemptsRef.current.map(a => a.id)))); }
+      catch (_) { /* transient */ }
+      busy = false;
+    };
+    const poll = setInterval(() => { if (!document.hidden) refresh(); }, 20000);
 
     // Also refresh the moment the tab regains focus — a teacher flipping
     // back from the student roster expects current numbers.
-    const onFocus = async () => { try { merge(await fetchAttempts()); } catch (_) {} };
-    window.addEventListener("focus", onFocus);
+    window.addEventListener("focus", refresh);
 
-    return () => { unsubscribe(); clearInterval(poll); window.removeEventListener("focus", onFocus); };
+    return () => { unsubscribe(); clearInterval(poll); window.removeEventListener("focus", refresh); };
   }, [isFaculty, dataReady]);
 
   if (isLoading) return <Spinner />;
@@ -231,7 +251,7 @@ function AppInner() {
         {dataError && <div className="mb-6 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertCircle size={16} className="shrink-0"/><span className="flex-1">Some data could not be loaded ({dataError}). The rest of the app is usable — reload to try again.</span><button onClick={() => setDataError("")} className="shrink-0 text-amber-400 hover:text-amber-700"><XCircle size={16}/></button></div>}
 
         {view === "admin" && isAdmin
-          ? <AdminPanel questions={questions} quizzes={quizzes} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms}/>
+          ? <Suspense fallback={<PanelLoading/>}><AdminPanel questions={questions} quizzes={quizzes} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms}/></Suspense>
           : isFaculty
             ? <Faculty questions={questions} setQuestions={setQuestions} quizzes={quizzes} setQuizzes={setQuizzes} attempts={attempts} setAttempts={setAttempts} classrooms={classrooms} setClassrooms={setClassrooms}/>
             : <Student questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} attempts={attempts} setAttempts={setAttempts} classrooms={classrooms} setClassrooms={setClassrooms} user={user} profile={profile}/>}
@@ -241,7 +261,10 @@ function AppInner() {
         QuizPro · Lockdown mode: blocks the screen on window switches, detects split-screen and floating apps. Install the native app for full device lock.
       </footer>
 
-      <AIAssistant questions={questions} quizzes={quizzes} attempts={attempts} role={isFaculty?"faculty":"student"} userName={profile?.full_name}/>
+      {/* Students get the assistant from their own screens, which leave
+          it out while a quiz is being written — it used to float above
+          the exam, a chatbot available mid-test. */}
+      {isFaculty && <AIAssistant role="faculty"/>}
     </div>
   );
 }
@@ -270,9 +293,9 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
         ))}
       </div>
       {tab==="overview"   && <FacultyOverview questions={questions} quizzes={quizzes} attempts={attempts} classrooms={classrooms} onOpenQuiz={(q)=>{ setOpenQuiz(q); setTab("quizzes"); }} onGoto={setTab}/>}
-      {tab==="classrooms" && <ClassroomManager classrooms={classrooms} setClassrooms={setClassrooms}/>}
+      {tab==="classrooms" && <Suspense fallback={<PanelLoading/>}><ClassroomManager classrooms={classrooms} setClassrooms={setClassrooms}/></Suspense>}
       {tab==="bank"       && <QuestionBank questions={questions} setQuestions={setQuestions}/>}
-      {tab==="qaapf"     && <QAAPFPanel attempts={attempts} questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} setQuestions={setQuestions} classrooms={classrooms}/>}
+      {tab==="qaapf"     && <Suspense fallback={<PanelLoading/>}><QAAPFPanel attempts={attempts} questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} setQuestions={setQuestions} classrooms={classrooms}/></Suspense>}
       {tab==="quizzes"    && (openQuiz
         ? <QuizDetail quizzes={quizzes} quiz={openQuiz} questions={questions} attempts={attempts} classrooms={classrooms} profiles={null} onBack={() => setOpenQuiz(null)}/>
         : <QuizManager questions={questions} quizzes={quizzes} setQuizzes={setQuizzes} attempts={attempts} classrooms={classrooms} onOpen={setOpenQuiz}/>)}
@@ -467,25 +490,6 @@ function FacultyOverview({ questions, quizzes, attempts, classrooms, onOpenQuiz,
   );
 }
 
-// Lightweight inline bar chart - no recharts dependency for this simple case
-function WeekBarChart({ data }) {
-  const max = Math.max(100, ...data.map(d => d.avg));
-  return (
-    <div className="flex h-52 items-end gap-3 px-1">
-      {data.map(d => (
-        <div key={d.name} className="flex flex-1 flex-col items-center gap-2">
-          <div className="flex w-full flex-1 items-end">
-            <div className="w-full rounded-t-lg bg-violet-600 transition-all duration-500" style={{ height: `${(d.avg / max) * 100}%`, minHeight: d.avg > 0 ? 4 : 0 }} title={`${d.avg}%`} />
-          </div>
-          <span className={`text-xs font-bold text-slate-700 ${num}`}>{d.avg}%</span>
-          <span className="text-[11px] text-slate-400">{d.name}</span>
-        </div>
-      ))}
-      {!data.length && <Empty icon={ListChecks} title="No quiz data yet" />}
-    </div>
-  );
-}
-
 /* ── Question Bank ────────────────────────────────────────────────── */
 function QuestionBank({ questions, setQuestions }) {
   const [q, setQ]             = useState("");
@@ -667,7 +671,7 @@ function QuestionBank({ questions, setQuestions }) {
         </div>
       )}
 
-      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} subjects={subjects} units={units} onDone={() => setAdding(false)} onSuccess={msg => toast2(msg)}/>}
+      {adding && <AddQuestion questions={questions} setQuestions={setQuestions} subjects={subjects} units={units} onDone={() => setAdding(false)} onSuccess={(msg, tone) => toast2(msg, tone)}/>}
       {editing && (
         <EditQuestionModal
           question={editing}
@@ -1093,8 +1097,10 @@ function ReopenModal({ quiz, onCancel, onConfirm }) {
 }
 
 function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose }) {
-  const { user, profile } = useAuth();
-  const myRooms = useMemo(() => classrooms.filter(c => !c.is_archived), [classrooms]);
+  const { user, profile, isAdmin } = useAuth();
+  /* The quiz's own classroom stays selectable even if it has since been
+     archived, so opening the editor never silently moves the quiz. */
+  const myRooms = useMemo(() => classrooms.filter(c => !c.is_archived || c.id === quiz.classroom_id), [classrooms, quiz.classroom_id]);
   const attemptCount = attempts.filter(a => a.quiz_id === quiz.id).length;
   const questionsLocked = attemptCount > 0;
 
@@ -1108,9 +1114,11 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
   const [policy,      setPolicy]      = useState(quiz.show_answers_policy || "after_close");
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState(null);
-  const ready = title.trim();
+  const problem = quizSettingsProblem({ minutes, maxAttempts, openAt, closeAt });
+  const ready = title.trim() && !problem;
 
   const save = async () => {
+    if (problem) { setError(problem); return; }
     setSaving(true); setError(null);
     try {
       const patch = {
@@ -1171,9 +1179,12 @@ function EditQuizModal({ quiz, questions, attempts, classrooms, onSaved, onClose
         <div><label className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-500"><School size={12}/> Classroom</label>
           <select className={inp} value={classroomId} onChange={e => setClassroomId(e.target.value)}>
             {myRooms.map(c => <option key={c.id} value={c.id}>{c.name}{c.section ? ` · ${c.section}` : ""}{c.year ? ` (${c.year})` : ""}</option>)}
-            <option value="">All students</option>
+            {/* Publishing to every student on the platform is an admin
+                choice, as it is when creating a quiz. */}
+            {(isAdmin || !quiz.classroom_id) && <option value="">All students</option>}
           </select>
         </div>
+        {problem && <p className="text-xs font-semibold text-rose-600">{problem}</p>}
         <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
           <button className={btnG} onClick={onClose}>Cancel</button>
           <button className={btnP} disabled={!ready || saving} onClick={save}><Save size={14}/> {saving ? "Saving…" : "Save changes"}</button>
@@ -1259,7 +1270,8 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
   const selectByUnit   = (unit) => setSelectedIds(s => { const n = new Set(s); questions.filter(q=>q.unit===unit).forEach(q=>n.add(q.id)); return n; });
 
   const needsRoom = !isAdmin && !classroomId;
-  const ready = title.trim() && selectedCount > 0 && !needsRoom;
+  const problem = quizSettingsProblem({ minutes, maxAttempts, openAt, closeAt });
+  const ready = title.trim() && selectedCount > 0 && !needsRoom && !problem;
   const diffTone = d => d==="hard"?"rose":d==="easy"?"emerald":"amber";
   const diffCounts = useMemo(() => {
     const e=filteredQs.filter(q=>(q.difficulty||"medium")==="easy").length;
@@ -1452,7 +1464,7 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
 
       <div className="mt-4 flex items-center justify-between gap-2">
         <p className="text-xs text-slate-500">
-          {selectedCount === 0 ? "Pick at least one question above." : `${selectedCount} Q across ${derivedUnits.length} unit${derivedUnits.length===1?"":"s"} · ${Math.round(minutes)} min`}
+          {problem ? <span className="font-semibold text-rose-600">{problem}</span> : selectedCount === 0 ? "Pick at least one question above." : `${selectedCount} Q across ${derivedUnits.length} unit${derivedUnits.length===1?"":"s"} · ${Math.round(minutes)} min`}
         </p>
         <div className="flex gap-2">
           <button className={btnG} onClick={onDone}>Cancel</button>
@@ -1706,7 +1718,17 @@ function printQuizPaper(quiz, questions, { withKey }) {
 function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profiles, onBack }) {
   const isBaseline = isBaselineQuiz(quiz);
   const room = classrooms.find(c => c.id === quiz.classroom_id);
-  const at  = attempts.filter(a => a.quiz_id === quiz.id).sort((a,b) => b.percent-a.percent);
+  /* Baseline papers are scored against the verified QAAPF key, as on
+     the QAAPF screens, so the two never show different numbers. */
+  const at = useMemo(() => {
+    const raw = attempts.filter(a => a.quiz_id === quiz.id);
+    const rows = isBaseline
+      ? rekeyAttempts(raw, questions).map(a => (a.rekey?.changed && a.rekey.percent !== null)
+          ? { ...a, percent: a.rekey.percent, score: a.rekey.correct, max_score: a.rekey.scored }
+          : a)
+      : raw;
+    return rows.sort((a, b) => b.percent - a.percent);
+  }, [attempts, quiz.id, isBaseline, questions]);
   const avg = at.length ? Math.round(at.reduce((s,a)=>s+a.percent,0)/at.length) : 0;
   const passCount  = at.filter(a=>a.percent>=60).length;
   const honorsCount= at.filter(a=>a.percent>=80).length;
@@ -1765,7 +1787,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
       { label: "Attempt #",       key: "attempt_number" },
       { label: "Score",           value: r => `${r.score}/${r.max_score}` },
       { label: "Percent %",       key: "percent" },
-      { label: "Grade",           value: r => r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
+      { label: isBaseline ? "QAAPF band" : "Grade", value: r => isBaseline ? (getQLevel(r.percent)?.level || "") : r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
       { label: "Flags",           key: "violations" },
       { label: "Time Taken",      value: r => fmtTime(r.time_used_sec || 0) },
       { label: "Time Taken (s)",  key: "time_used_sec" },
@@ -2031,22 +2053,21 @@ function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classr
     startQuizRef.current?.(qz);
   }, [quizzes]);
 
-  const onSubmit = async (attempt) => {
-    try {
-      const meta = studentMeta || loadMeta() || {};
-      const saved = await insertAttempt({
-        ...attempt,
-        student_course:   meta.course   || null,
-        student_semester: meta.semester || null,
-        student_cu_id:    meta.cu_id    || null,
-        student_phone:    meta.phone    || null,
-        meta,
-      });
-      setAttempts(prev => [...prev, saved]);
-      localStorage.removeItem(draftKey(attempt.quiz_id, attempt.user_id));
-      setLast(saved);
-      setScreen("result");
-    } catch (err) { throw err; }
+  const onSubmit = async (attempt, { retry = false } = {}) => {
+    const meta = { ...(studentMeta || loadMeta() || {}), client_attempt_id: attempt.client_attempt_id };
+    const { client_attempt_id: _token, ...row } = attempt;
+    const saved = await insertAttempt({
+      ...row,
+      student_course:   meta.course   || null,
+      student_semester: meta.semester || null,
+      student_cu_id:    meta.cu_id    || null,
+      student_phone:    meta.phone    || null,
+      meta,
+    }, { retry });
+    setAttempts(prev => prev.some(a => a.id === saved.id) ? prev : [...prev, saved]);
+    try { localStorage.removeItem(draftKey(attempt.quiz_id, attempt.user_id)); } catch (_) {}
+    setLast(saved);
+    setScreen("result");
   };
 
   const startQuiz = (qz) => {
@@ -2063,11 +2084,48 @@ function Student({ questions, quizzes, setQuizzes, attempts, setAttempts, classr
 
   startQuizRef.current = startQuiz;
 
+  /* Before the exam opens: fetch the paper and the server's record of
+     any earlier sitting. With STEP6 run, students cannot read the
+     question bank (it holds the answer key), so the paper comes from
+     the quiz_paper function; without it, from the list already loaded. */
+  const [paper, setPaper] = useState(null);       // { questions, anchor }
+  const [preparing, setPreparing] = useState(false);
+  const [prepError, setPrepError] = useState(null);
+  const beginExam = async () => {
+    if (!activeQuiz) return;
+    setPreparing(true); setPrepError(null);
+    try {
+      const [rows, anchor] = await Promise.all([
+        fetchQuizPaper(activeQuiz.id),
+        fetchMyLiveSession(activeQuiz.id, user.id),
+      ]);
+      setPaper({ questions: rows || questions, anchor });
+      setScreen("exam");
+    } catch (err) {
+      setPrepError(`Could not load the quiz: ${err.message}. Check your connection and try again.`);
+    }
+    setPreparing(false);
+  };
+
   if (needsProfile && activeQuiz) return <StudentProfileModal userId={user.id} onSave={meta=>{ setStudentMeta(meta); setNeedsProfile(false); setScreen("rules"); }}/>;
-  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile?.full_name} userId={user.id} onStart={() => setScreen("exam")} onBack={() => setScreen("home")}/>;
-  if (screen==="exam"   && activeQuiz) return <Exam questions={questions} quiz={activeQuiz} user={user} profile={profile} attempts={attempts} onSubmit={onSubmit} onAbort={() => setScreen("home")}/>;
-  if (screen==="result" && lastAttempt) return <Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} name={profile?.full_name} onHome={() => setScreen("home")}/>;
-  return <StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile?.full_name} userId={user.id} onStart={startQuiz} deepLinkMsg={deepLinkMsg} onDismissDeepLink={()=>setDeepLinkMsg(null)}/>;
+  if (screen==="rules"  && activeQuiz) return <Rules quiz={activeQuiz} questions={questions} attempts={attempts} name={profile?.full_name} userId={user.id} onStart={beginExam} starting={preparing} startError={prepError} onBack={() => { setPrepError(null); setScreen("home"); }}/>;
+  if (screen==="exam"   && activeQuiz && paper) return <Exam questions={paper.questions} anchor={paper.anchor} quiz={activeQuiz} user={user} profile={profile} attempts={attempts} onSubmit={onSubmit} onAbort={() => setScreen("home")}/>;
+  if (screen==="result" && lastAttempt) return <><Result quizzes={quizzes} attempt={lastAttempt} attempts={attempts} userId={user.id} onHome={() => setScreen("home")}/><AIAssistant role="student"/></>;
+  return <><StudentHome quizzes={quizzes} setQuizzes={setQuizzes} questions={questions} attempts={attempts} classrooms={classrooms} setClassrooms={setClassrooms} name={profile?.full_name} userId={user.id} onStart={startQuiz} deepLinkMsg={deepLinkMsg} onDismissDeepLink={()=>setDeepLinkMsg(null)}/><AIAssistant role="student"/></>;
+}
+
+/* How many questions a quiz can draw from, as far as this browser can
+   tell. Once STEP6 hides the bank from students their list is empty;
+   the quiz's own list (or its draw count) is then the best answer, and
+   the server supplies the paper itself. */
+function quizPoolSize(qz, questions) {
+  const exact = Array.isArray(qz.question_ids) && qz.question_ids.length > 0;
+  if (!questions.length) return exact ? qz.question_ids.length : (qz.draw_count || 0);
+  if (exact) {
+    const want = new Set(qz.question_ids);
+    return questions.filter(b => want.has(b.id)).length;
+  }
+  return questions.filter(b => (qz.units || []).includes(b.unit)).length;
 }
 
 function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, setClassrooms, name, userId, onStart, deepLinkMsg, onDismissDeepLink }) {
@@ -2259,9 +2317,7 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
             const attemptsUsed = myAttempts.length;
             const canRetake = attemptsUsed > 0 && attemptsUsed < qz.max_attempts;
             const isExact = Array.isArray(qz.question_ids) && qz.question_ids.length > 0;
-            const pool = isExact
-              ? questions.filter(b => qz.question_ids.includes(b.id)).length
-              : questions.filter(b => (qz.units||[]).includes(b.unit)).length;
+            const pool = quizPoolSize(qz, questions);
             const needed = isExact ? 1 : qz.draw_count;
             const avail = quizAvailability(qz);
             const canStart = avail.available && pool >= needed && (attemptsUsed === 0 || canRetake);
@@ -2315,11 +2371,8 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
   );
 }
 
-function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
-  const isExact = Array.isArray(quiz.question_ids) && quiz.question_ids.length > 0;
-  const pool = isExact
-    ? questions.filter(b => quiz.question_ids.includes(b.id)).length
-    : questions.filter(b => (quiz.units||[]).includes(b.unit)).length;
+function Rules({ quiz, questions, attempts, name, userId, onStart, starting = false, startError = null, onBack }) {
+  const pool = quizPoolSize(quiz, questions);
   const myAttempts = attempts.filter(a => a.quiz_id === quiz.id && a.user_id === userId).length;
   const isRetake = myAttempts > 0;
   const isBaseline = isBaselineQuiz(quiz);
@@ -2368,7 +2421,8 @@ function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
             </div>
           )}
           <div className="rounded-xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-500 border border-slate-100">This system cannot see a second device. Part of academic integrity is trust — do your own work.</div>
-          <button className={`${btnP} w-full`} onClick={onStart}><Play size={15}/> Start now</button>
+          {startError && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">{startError}</div>}
+          <button className={`${btnP} w-full`} onClick={onStart} disabled={starting}><Play size={15}/> {starting ? "Loading the quiz…" : "Start now"}</button>
         </div>
       </div>
     </div>
@@ -2376,7 +2430,8 @@ function Rules({ quiz, questions, attempts, name, userId, onStart, onBack }) {
 }
 
 /* ── Proctored Exam ───────────────────────────────────────────────── */
-function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
+
+function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmit, onAbort }) {
   const containerRef = useRef(null);
   const isBaselinePaper = isBaselineQuiz(quiz);
   const dKey = draftKey(quiz.id, user.id);
@@ -2425,22 +2480,46 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   });
   const drawn = init.drawn;
   const draft = init.fromDraft ? restored : null;
+  /* The deadline is fixed once, when the screen opens. */
+  const [clock] = useState(() => examClock({ draft, anchor, quiz, attempts, userId: user.id }));
+  const deadline = clock.deadline;
+  /* One token per sitting, kept in the draft, so a retried submission
+     is recognised as the same paper rather than stored twice. */
+  const [clientAttemptId] = useState(() => draft?.clientAttemptId
+    || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`));
   const [answers, setAnswers]       = useState(() => (Array.isArray(draft?.answers) && draft.answers.length === drawn.length ? draft.answers : drawn.map(() => null)));
   // "Mark for review" — standard in NTA/GRE/GMAT interfaces. Students
   // park an uncertain question and come back rather than burning time.
   const [flagged, setFlagged]       = useState(() => new Set(draft?.flagged ?? []));
   const [online, setOnline]         = useState(() => navigator.onLine !== false);
   const [idx, setIdx]               = useState(0);
-  const [remaining, setRemaining]   = useState(() => draft?.remaining ?? quiz.duration_sec);
-  const [log, setLog]               = useState(() => draft?.log ?? []);
+  const [remaining, setRemaining]   = useState(() => remainingAt(deadline));
+  /* The integrity log. Entries of kind "note" are shown but are not
+     violations (the auto-submit line, a same-browser resume). */
+  const [log, setLog]               = useState(() => {
+    const base = Array.isArray(draft?.log) ? draft.log : [];
+    const t = Date.now();
+    const at = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (clock.source === "server") {
+      /* Flags raised in the first browser are on the server, not here.
+         Carry the count over so switching browsers does not wipe it. */
+      const carried = Array.from({ length: Math.max(0, Number(anchor?.violations) || 0) }, () =>
+        ({ t, label: `Flag carried over from the first browser${anchor?.last_flag ? ` (last: ${anchor.last_flag})` : ""}` }));
+      return [...base, ...carried, { t, label: `Reopened in another browser or after clearing data — clock kept from ${at(clock.startedAt)}` }];
+    }
+    if (clock.source === "restart") return [...base, { t, label: `Started again after an unfinished sitting begun at ${at(clock.startedAt)}` }];
+    return base;
+  });
+  const violationsIn = l => l.filter(e => e.kind !== "note").length;
   const [banner, setBanner]         = useState(null);
   const [fsBlocked, setFsBlocked]   = useState(false);
+  const [needFs, setNeedFs]         = useState(false);
   const [submitted, setSubmitted]   = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [submitting, setSubmitting]   = useState(false);
   const [locked, setLocked]         = useState(false);
-  const [violationCount, setViolationCount] = useState(0);
+  const [violationCount, setViolationCount] = useState(() => violationsIn(log));
   const submittedRef = useRef(false);
   const cleanupRef = useRef(null);   // { cleanup, unlock }
   const finishRef = useRef(null);    // always-current ref to finish()
@@ -2458,17 +2537,19 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     shownAtRef.current = now;
   };
 
-  // Persist a snapshot to localStorage on every meaningful change.
+  // Persist a snapshot to localStorage on every meaningful change, and
+  // every ten seconds so time-per-question survives a crash.
+  const saveTick = Math.floor(remaining / 10);
   useEffect(() => {
     if (submitted) return;
     try {
       localStorage.setItem(dKey, JSON.stringify({
         quizId: quiz.id,
         ids: drawn.map(d => d.q.id), orders: drawn.map(d => d.order),
-        answers, flagged: [...flagged], remaining, log, dwell: dwellRef.current, savedAt: Date.now(),
+        answers, flagged: [...flagged], deadline, clientAttemptId, log, dwell: dwellRef.current, savedAt: Date.now(),
       }));
     } catch (_) {}
-  }, [answers, flagged, remaining, log, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [answers, flagged, saveTick, log, idx, submitted]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Network state — shown in the integrity panel so a student can see
   // at a glance that a dropped connection has not eaten their answers.
@@ -2479,8 +2560,8 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
 
-  const addFlag = useCallback(label => {
-    setLog(l => [...l, { t: Date.now(), label }]);
+  const addFlag = useCallback((label, kind) => {
+    setLog(l => [...l, kind ? { t: Date.now(), label, kind } : { t: Date.now(), label }]);
     setBanner(label);
     setTimeout(() => setBanner(null), 3500);
   }, []);
@@ -2490,20 +2571,27 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   // the latest finish(), avoiding stale-closure bugs.
   useEffect(() => {
     if (submitted) return;
+    let disposed = false;
     import("./lib/lockdown.js").then(({ createLockdownSession }) => {
+      if (disposed || submittedRef.current) return;
       const session = createLockdownSession({
         container: containerRef.current,
-        onFlag: (label) => {
-          if (!submittedRef.current) addFlag(label);
+        initialViolations: violationCount,
+        onFlag: (label, count) => {
+          if (submittedRef.current) return;
+          addFlag(label);
+          setViolationCount(count);
         },
-        onLock: () => {
-          if (!submittedRef.current) {
-            setLocked(true);
-            setViolationCount(c => c + 1);
-          }
+        onLock: (count) => {
+          if (submittedRef.current) return;
+          setLocked(true);
+          setViolationCount(count);
         },
-        onAutoSubmit: () => {
-          if (!submittedRef.current && finishRef.current) finishRef.current();
+        onAutoSubmit: (note) => {
+          if (submittedRef.current) return;
+          addFlag(note, "note");
+          // Let the log entry land before the paper is built.
+          setTimeout(() => finishRef.current?.(), 0);
         },
         autoSubmitAt: 5,
       });
@@ -2513,9 +2601,25 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     });
 
     return () => {
+      disposed = true;
       if (cleanupRef.current) cleanupRef.current.cleanup();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Fullscreen needs a click. The exam opens after the paper has
+     loaded, and on a slow connection the click on "Start now" may be
+     too long ago for the browser to allow it — leaving the student
+     outside fullscreen with no way in. Offer a button instead. */
+  useEffect(() => {
+    if (submitted) return;
+    const canFs = !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+    if (!canFs) return;
+    const check = () => setNeedFs(!fsElement() && !locked);
+    const t = setTimeout(check, 2500);
+    document.addEventListener("fullscreenchange", check);
+    document.addEventListener("webkitfullscreenchange", check);
+    return () => { clearTimeout(t); document.removeEventListener("fullscreenchange", check); document.removeEventListener("webkitfullscreenchange", check); };
+  }, [locked, submitted]);
 
   // Clean up lockdown on submit
   useEffect(() => {
@@ -2537,12 +2641,16 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
     setLocked(false);
   }, []);
 
+  /* Read the clock rather than counting ticks: correct after the tab
+     was in the background, the laptop slept, or the page was reopened. */
   useEffect(() => {
     if (submitted) return;
-    if (remaining <= 0) { finish(); return; }
-    const id = setTimeout(() => setRemaining(r => r-1), 1000);
-    return () => clearTimeout(id);
-  }, [remaining, submitted]);
+    const tick = () => setRemaining(remainingAt(deadline));
+    tick();
+    const id = setInterval(tick, 500);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
+  }, [deadline, submitted]);
 
   useEffect(() => { if (idxRef.current !== idx) { flushDwell(); idxRef.current = idx; } }, [idx]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -2552,63 +2660,79 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
 
   const choose = origIdx => setAnswers(a => { const n=[...a]; n[idx]=origIdx; return n; });
 
+  /* The paper as answered. When the questions came from quiz_paper
+     (STEP6) there is no answer key in the browser, so the score here
+     is zero and the database scores the paper on insert; the result
+     screen shows the row the database returns. */
+  const payloadRef = useRef(null);
   const buildAttemptPayload = useCallback(() => {
     let score = 0, maxScore = 0;
     flushDwell();
     const items = drawn.map((d, i) => {
       const pts = Number(d.q.points) || 1;
       maxScore += pts;
-      if (answers[i] === d.q.correct) score += pts;
+      if (answers[i] !== null && answers[i] === d.q.correct) score += pts;
       return {
-        qid: d.q.id, question: d.q.question, options: d.q.options, correct: d.q.correct, chosen: answers[i],
+        qid: d.q.id, question: d.q.question, options: d.q.options, correct: d.q.correct ?? null, chosen: answers[i],
         sec: Math.round((dwellRef.current[i] || 0) / 1000), pos: i, shown: d.order,
       };
     });
-    const used = quiz.duration_sec - remaining;
+    const durSec = Number(quiz.duration_sec) || 0;
+    const used = Math.min(durSec, Math.round((Date.now() - (deadline - durSec * 1000)) / 1000));
     const attemptNumber = attempts.filter(a => a.quiz_id === quiz.id && a.user_id === user.id).length + 1;
     return {
       quiz_id: quiz.id,
       user_id: user.id,
-      student_name: profile.full_name,
+      student_name: profile?.full_name || "Student",
       attempt_number: attemptNumber,
       score, max_score: maxScore, percent: pct(score, maxScore),
-      violations: log.length, items, log,
+      violations: violationsIn(log), items, log,
       submitted_at: new Date().toISOString(),
       time_used_sec: used > 0 ? used : 1,
+      client_attempt_id: clientAttemptId,
     };
-  }, [drawn, answers, quiz, user, profile, remaining, log, attempts]);
+  }, [drawn, answers, quiz, user, profile, deadline, log, attempts, clientAttemptId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const finish = useCallback(async () => {
     if (submittedRef.current) return;
-    submittedRef.current = true; setSubmitted(true); exitFs();
+    submittedRef.current = true; setSubmitted(true);
+    try { if (fsElement()) exitFs()?.catch?.(() => {}); } catch (_) {}
     setSubmitting(true);
-    const payload = buildAttemptPayload();
+    /* Built once: a retry must send the same paper, not one with a
+       later time and a longer log. */
+    const payload = payloadRef.current || (payloadRef.current = buildAttemptPayload());
     try {
-      await onSubmit(payload);
+      /* retry:true makes the save look for this sitting's token first,
+         which matters when a paper is reopened after a failed save. */
+      await onSubmit(payload, { retry: true });
       endLiveSession(quiz.id, user.id, "submitted");
     } catch (err) {
       // Submission failed (network drop, etc). The draft is still in
       // localStorage — offer a retry instead of silently losing the exam.
       setSubmitError(err.message || "Could not reach the server.");
-      submittedRef.current = false; // allow retry to re-attempt
     }
     setSubmitting(false);
-  }, [buildAttemptPayload, onSubmit]);
+  }, [buildAttemptPayload, onSubmit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep finishRef in sync so the lockdown engine's onAutoSubmit
   // always calls the latest finish() with current state.
   useEffect(() => { finishRef.current = finish; }, [finish]);
 
+  // Time up: submit what is there. Also covers reopening a paper whose
+  // deadline passed while it was closed.
+  useEffect(() => {
+    if (!submitted && remaining <= 0) finish();
+  }, [remaining, submitted, finish]);
+
   const retrySubmit = async () => {
     setSubmitError(null);
     setSubmitting(true);
-    submittedRef.current = true;
-    const payload = buildAttemptPayload();
+    const payload = payloadRef.current || (payloadRef.current = buildAttemptPayload());
     try {
-      await onSubmit(payload);
+      await onSubmit(payload, { retry: true });
+      endLiveSession(quiz.id, user.id, "submitted");
     } catch (err) {
       setSubmitError(err.message || "Still could not reach the server. Your answers are saved locally — try again when your connection is back.");
-      submittedRef.current = false;
     }
     setSubmitting(false);
   };
@@ -2623,7 +2747,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
   const liveMeta = useRef({ answered: 0, violations: 0, lastFlag: null, remaining: 0 });
   liveMeta.current = {
     answered,
-    violations: log.length,
+    violations: violationsIn(log),
     lastFlag: log.length ? log[log.length - 1].label : null,
     remaining,
   };
@@ -2634,6 +2758,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
       try { return JSON.parse(localStorage.getItem(`quizpro:profile:${user.id}`) || "{}"); }
       catch { return {}; }
     })();
+    const m = liveMeta.current;
     startLiveSession({
       quiz_id: quiz.id,
       user_id: user.id,
@@ -2641,9 +2766,13 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
       student_course: meta.course || null,
       student_cu_id: meta.cu_id || null,
       total: drawn.length,
-      answered: 0,
-      violations: 0,
-      remaining_sec: quiz.duration_sec,
+      answered: m.answered,
+      violations: m.violations,
+      last_flag: m.lastFlag,
+      remaining_sec: m.remaining,
+      /* A fresh sitting records when it began — the server copy of the
+         clock. A resumed one leaves the original start in place. */
+      ...(clock.fresh ? { started_at: new Date(deadline - (Number(quiz.duration_sec) || 0) * 1000).toISOString() } : {}),
     });
 
     const tick = setInterval(() => {
@@ -2780,6 +2909,13 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
           </div>
         )}
 
+        {needFs && !locked && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-100">
+            <span>This quiz should run in fullscreen. Your browser did not switch automatically.</span>
+            <button className={btnP} onClick={() => { enterFs(containerRef.current)?.catch?.(() => setFsBlocked(true)); setNeedFs(false); }}>Go fullscreen</button>
+          </div>
+        )}
+
         <div className="mt-5 grid gap-5 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <div className="rounded-2xl border border-slate-700 bg-slate-800/60 p-6">
@@ -2852,8 +2988,8 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
                   : <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-400"><WifiOff size={12}/> Offline</span>}
               </div>
               <div className="mt-4 flex items-baseline gap-2">
-                <span className={`text-4xl font-extrabold ${num} ${log.length===0?"text-emerald-400":"text-amber-400"}`}>{log.length}</span>
-                <span className="text-xs text-slate-400">flag{log.length===1?"":"s"}</span>
+                <span className={`text-4xl font-extrabold ${num} ${violationCount===0?"text-emerald-400":"text-amber-400"}`}>{violationCount}</span>
+                <span className="text-xs text-slate-400">flag{violationCount===1?"":"s"}</span>
               </div>
               {!online && (
                 <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
@@ -2918,7 +3054,7 @@ function Exam({ questions, quiz, user, profile, attempts, onSubmit, onAbort }) {
 }
 
 /* ── Result ───────────────────────────────────────────────────────── */
-function Result({ quizzes, attempt, attempts, name, onHome }) {
+function Result({ quizzes, attempt, attempts, userId, onHome }) {
   /* Answer-key exposure control.
 
      Showing the key the instant a paper is submitted creates an
@@ -2934,7 +3070,8 @@ function Result({ quizzes, attempt, attempts, name, onHome }) {
     : false;
   const showAnswers = policy === "immediate" || (policy === "after_close" && windowShut);
   const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
-  const rank   = board.findIndex(s => s.student === name);
+  // By account, not display name — two students can share a name.
+  const rank   = board.findIndex(s => s.user_id === (userId ?? attempt.user_id));
   const isBaseline = isBaselineQuiz(srcQuiz);
   /* Built-in questions are shown and counted against the verified key;
      faulty earlier questions are marked as withdrawn, not wrong. */

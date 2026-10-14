@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Users, ShieldCheck, ScrollText, Search, Crown, GraduationCap, UserCog, Activity, Database, School, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { card, cardH, btn, btnP, btnG, inp, num, Badge, Stat, Empty, Toast, dateStr } from "./ui";
-import { fetchAllProfiles, updateProfileRole, fetchAuditLog, logAudit, fetchClassroomsWithMeta, hardDeleteClassroom } from "../lib/db";
+import { fetchAllProfiles, countProfilesByRole, updateProfileRole, fetchAuditLog, logAudit, fetchClassroomsWithMeta, hardDeleteClassroom } from "../lib/db";
 import { useAuth } from "../lib/AuthContext";
 
 const ROLE_TONE = { admin: "rose", faculty: "violet", student: "sky" };
@@ -37,14 +37,14 @@ export default function AdminPanel({ questions, quizzes, attempts, setClassrooms
     setUsersLoading(false);
   }, []);
 
-  // Initial load and on page/search change
-  useEffect(() => { loadUsers(userPage, search); }, [userPage, loadUsers]);
-
-  // Debounce search
+  /* One effect for page and search. Two separate effects both fired on
+     mount and on every search, loading the same page twice. */
+  const [debounced, setDebounced] = useState("");
   useEffect(() => {
-    const t = setTimeout(() => { setUserPage(0); loadUsers(0, search); }, 350);
+    const t = setTimeout(() => { setDebounced(search); setUserPage(0); }, 350);
     return () => clearTimeout(t);
-  }, [search, loadUsers]);
+  }, [search]);
+  useEffect(() => { loadUsers(userPage, debounced); }, [userPage, debounced, loadUsers]);
 
   /* ── Load audit + classrooms once ────────────────────────────── */
   useEffect(() => {
@@ -60,22 +60,13 @@ export default function AdminPanel({ questions, quizzes, attempts, setClassrooms
 
   const totalPages = Math.max(1, Math.ceil(userCount / PAGE_SIZE));
 
-  // Role breakdown: fetch once on mount (all users), not per-page.
+  // Role breakdown: exact counts from the database (the old version
+  // downloaded every profile and stopped counting at 1,000).
   const [counts, setCounts] = useState({ admin: 0, faculty: 0, student: 0 });
-  useEffect(() => {
-    (async () => {
-      try {
-        // Fetch page 0 with a large size and no search, just to get totals.
-        // fetchAllProfiles returns { data, count } — we use all data here.
-        const { data: all } = await fetchAllProfiles(0, 10000, "");
-        setCounts({
-          admin: all.filter(u => u.role === "admin").length,
-          faculty: all.filter(u => u.role === "faculty").length,
-          student: all.filter(u => u.role === "student").length,
-        });
-      } catch (_) {}
-    })();
+  const loadCounts = useCallback(async () => {
+    try { setCounts(await countProfilesByRole()); } catch (_) {}
   }, []);
+  useEffect(() => { loadCounts(); }, [loadCounts]);
 
   const changeRole = async (target, newRole) => {
     if (target.id === user.id && newRole !== "admin" && isAdmin) {
@@ -86,7 +77,8 @@ export default function AdminPanel({ questions, quizzes, attempts, setClassrooms
       setUsers(prev => prev.map(u => u.id === target.id ? { ...u, role: newRole } : u));
       await logAudit({ actor_id: user.id, actor_name: me.full_name, action: "role.change", target: target.email, meta: { from: target.role, to: newRole } });
       setAuditLog(prev => [{ id: crypto.randomUUID(), actor_name: me.full_name, action: "role.change", target: target.email, meta: { from: target.role, to: newRole }, created_at: new Date().toISOString() }, ...prev]);
-      toast2(`${target.full_name} is now ${newRole}.`);
+      toast2(`${target.full_name || target.email} is now ${newRole}.`);
+      loadCounts();
       if (target.id === user.id) await refreshProfile();
     } catch (err) {
       toast2(err.message, "rose");
@@ -171,8 +163,8 @@ export default function AdminPanel({ questions, quizzes, attempts, setClassrooms
                         <div className="flex items-center gap-2">
                           {u.avatar_url
                             ? <img src={u.avatar_url} className="h-7 w-7 rounded-full object-cover border border-slate-200" alt="" />
-                            : <div className="grid h-7 w-7 place-items-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">{u.full_name.charAt(0)}</div>}
-                          <span className="font-medium text-slate-800">{u.full_name}</span>
+                            : <div className="grid h-7 w-7 place-items-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">{(u.full_name || u.email || "?").charAt(0)}</div>}
+                          <span className="font-medium text-slate-800">{u.full_name || <em className="text-slate-400">no name</em>}</span>
                           {u.id === user.id && <Badge tone="slate">You</Badge>}
                         </div>
                       </td>
@@ -348,8 +340,11 @@ export default function AdminPanel({ questions, quizzes, attempts, setClassrooms
           <div className={`${card} p-5`}>
             <h4 className="mb-2 text-sm font-bold text-slate-900">AI provider</h4>
             <p className="text-xs leading-relaxed text-slate-500">
-              The AI assistant is configured via the <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">VITE_AI_PROVIDER</code> environment
-              variable. Default is Groq (free tier). Set it to <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">anthropic</code> to use Claude instead — see DEPLOY_GUIDE.md.
+              The assistant uses whichever key is set in Netlify's environment variables, in this order:
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">VITE_GROQ_KEY</code> (free),
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">VITE_GEMINI_KEY</code> (free tier), then
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">VITE_ANTHROPIC_KEY</code>. Redeploy after changing a key.
+              Keys in a browser app are visible to anyone who looks, so use free-tier keys only. Students never see the assistant while a quiz is open.
             </p>
           </div>
         </div>

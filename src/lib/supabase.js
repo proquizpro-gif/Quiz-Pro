@@ -23,6 +23,7 @@ function makeStub() {
     const q = {
       select: chain, insert: chain, update: chain, upsert: chain, delete: chain,
       eq: chain, is: chain, or: chain, order: chain, range: chain, limit: chain,
+      gt: chain, gte: chain, in: chain, contains: chain,
       single: err, maybeSingle: err,
       then: (res, rej) => err().then(res, rej),
     };

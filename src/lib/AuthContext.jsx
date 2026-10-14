@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabase";
 
 const AuthContext = createContext(null);
@@ -6,16 +6,24 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
+  /* True once the profile for the current user has been looked up
+     (whether or not one was found). The app waits for it before loading
+     data: loading earlier ran the student queries for a faculty member,
+     then the faculty ones, and whichever finished last won — so a
+     faculty dashboard could come up holding only one person's attempts. */
+  const [profileReady, setProfileReady] = useState(false);
   const [dbReady, setDbReady] = useState(true);
+  const loadedFor = useRef(null);
 
   const loadProfile = async (user) => {
-    if (!user) { setProfile(null); return; }
+    if (!user) { loadedFor.current = null; setProfile(null); setProfileReady(true); return; }
     try {
       const { data, error } = await supabase.from("profiles").select("*").eq("id", user.id).single();
       if (error && error.code === "PGRST116") {
+        const fallbackName = user.user_metadata?.full_name || (user.email || "").split("@")[0] || "Student";
         const { data: newProf, error: ie } = await supabase
           .from("profiles")
-          .upsert({ id: user.id, email: user.email, full_name: user.user_metadata?.full_name || user.email.split("@")[0], avatar_url: user.user_metadata?.avatar_url || null, role: "student" }, { onConflict: "id" })
+          .upsert({ id: user.id, email: user.email, full_name: fallbackName, avatar_url: user.user_metadata?.avatar_url || null, role: "student" }, { onConflict: "id" })
           .select().single();
         if (!ie) setProfile(newProf);
       } else if (error && error.message?.includes("does not exist")) {
@@ -24,20 +32,34 @@ export function AuthProvider({ children }) {
         setProfile(data);
       }
     } catch (e) { console.error("Profile load failed:", e.message); }
+    setProfileReady(true);
   };
 
   const refreshProfile = async () => { if (session?.user) await loadProfile(session.user); };
 
+  /* Supabase reports every token refresh (about hourly) as a new session
+     object. Reloading the profile — and, downstream, every question and
+     attempt — on each refresh was wasted work and briefly reset state.
+     Only a change of signed-in user triggers a reload now. */
+  const onSession = (s) => {
+    setSession(s);
+    const uid = s?.user?.id ?? null;
+    if (uid === loadedFor.current) return;
+    loadedFor.current = uid;
+    setProfileReady(false);
+    loadProfile(s?.user ?? null);
+  };
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => { setSession(s); loadProfile(s?.user ?? null); });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_ev, s) => { setSession(s); loadProfile(s?.user ?? null); });
+    supabase.auth.getSession().then(({ data: { session: s } }) => onSession(s));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_ev, s) => onSession(s));
     return () => subscription.unsubscribe();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const signInWithGoogle = () => supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
   const signOut = () => supabase.auth.signOut();
 
-  const isLoading = session === undefined;
+  const isLoading = session === undefined || (!!session?.user && !profileReady);
   const user = session?.user ?? null;
   const isAdmin = profile?.role === "admin";
   const isFaculty = profile?.role === "faculty" || isAdmin;

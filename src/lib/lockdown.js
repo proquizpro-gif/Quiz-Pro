@@ -89,18 +89,57 @@ async function stopKioskMode() {
  * @param {HTMLElement} opts.container  - the exam container element
  * @returns {Function} cleanup
  */
+/* Size changes that are not the student doing anything: the browser
+   entering or leaving fullscreen, the device rotating, or the page
+   being zoomed. For a short settling period after each one the engine
+   re-measures instead of judging, so none of them counts as a
+   violation. Exported for the tests. */
+export const SETTLE_MS = 1500;
+export const SHRINK_LIMIT = 0.15;
+export const DEVTOOLS_GROWTH_PX = 160;
+
+/* Pure decision used by the resize handler: is the viewport now
+   meaningfully smaller than the settled baseline? Growth is never a
+   violation (leaving split-screen, a toolbar hiding). */
+export function isSuspiciousShrink(base, w, h) {
+  if (!base || !base.w || !base.h) return false;
+  return (base.w - w) / base.w > SHRINK_LIMIT || (base.h - h) / base.h > SHRINK_LIMIT;
+}
+
+/* Pure decision used by the developer-tools check: has the gap between
+   the window and the page grown well beyond what it was when the exam
+   settled? A fixed gap misfired on zoomed pages and browsers with side
+   panels, where the gap is large from the start. */
+export function devtoolsLikelyOpen(baseGap, gapW, gapH) {
+  if (!baseGap) return false;
+  return gapW - baseGap.w > DEVTOOLS_GROWTH_PX || gapH - baseGap.h > DEVTOOLS_GROWTH_PX;
+}
+
 export function createLockdownSession({
   onFlag,
   onLock,
   onAutoSubmit,
   autoSubmitAt = 5,
+  initialViolations = 0,
   container,
 }) {
-  let violationCount = 0;
-  let initialWidth = window.innerWidth;
-  let initialHeight = window.innerHeight;
+  /* Continues from the count a restored draft already holds, so a
+     reload does not hand the student five fresh violations. */
+  let violationCount = Math.max(0, initialViolations | 0);
   let isLocked = false;
   let wakeLock = null;
+  let ended = false;
+
+  // ── Settled baseline for the resize and devtools checks ─────────
+  let settleUntil = Date.now() + SETTLE_MS;    // the exam is going fullscreen right now
+  let base = null;                             // { w, h, dpr }
+  let baseGap = null;                          // { w, h }
+  const measure = () => {
+    base = { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 };
+    baseGap = { w: window.outerWidth - window.innerWidth, h: window.outerHeight - window.innerHeight };
+  };
+  const settle = () => { settleUntil = Date.now() + SETTLE_MS; };
+  const settling = () => Date.now() < settleUntil;
 
   // ── Debounce: multiple events fire for a single user action ──
   // e.g. visibilitychange + blur fire together on app switch.
@@ -109,31 +148,35 @@ export function createLockdownSession({
   let pendingLabel = null;
 
   const flag = (label) => {
+    if (ended) return;
     if (debounceTimer) {
       // Already have a pending violation in this window — append the
       // label but don't increment again.
-      pendingLabel = pendingLabel + " + " + label;
+      if (!pendingLabel.includes(label)) pendingLabel = pendingLabel + " + " + label;
       return;
     }
     pendingLabel = label;
     debounceTimer = setTimeout(() => {
-      violationCount++;
-      onFlag(pendingLabel);
       debounceTimer = null;
+      if (ended) return;
+      violationCount++;
+      const label = pendingLabel;
       pendingLabel = null;
+      onFlag(label, violationCount);
 
       // Auto-submit on excessive violations
       if (violationCount >= autoSubmitAt) {
-        onFlag(`Auto-submitted: ${autoSubmitAt} violations reached`);
-        onAutoSubmit?.();
+        ended = true;
+        onAutoSubmit?.(`Auto-submitted: ${autoSubmitAt} violations reached`);
         return;
       }
 
-      // Lock (show overlay) on every violation
-      if (!isLocked) {
-        isLocked = true;
-        onLock();
-      }
+      // Lock (show overlay) on every violation. The count is passed on
+      // every time, including while already locked, so the warning on
+      // the overlay is never behind the real number.
+      const wasLocked = isLocked;
+      isLocked = true;
+      onLock(violationCount, wasLocked);
     }, 500);
   };
 
@@ -142,22 +185,29 @@ export function createLockdownSession({
   // the next violation.
   const unlock = () => {
     isLocked = false;
+    settle();   // "Return to quiz" re-enters fullscreen
   };
 
   // ── Visibility change (tab switch / app switch) ──────────────
   const onVisibility = () => {
     if (document.hidden) {
       flag("Left the test window");
+    } else {
+      // The browser drops the wake lock whenever the page is hidden.
+      acquireWakeLock();
     }
   };
 
   // ── Fullscreen exit ──────────────────────────────────────────
   const onFullscreenChange = () => {
+    settle();   // the resize that follows is the browser's, not the student's
     const el = document.fullscreenElement || document.webkitFullscreenElement;
     if (!el) {
       flag("Exited fullscreen");
     }
   };
+
+  const onOrientation = () => settle();
 
   // ── Window blur (floating windows, PiP, notification shade) ──
   const onBlur = () => {
@@ -170,20 +220,22 @@ export function createLockdownSession({
   };
 
   // ── Resize detection (split-screen / floating window resize) ──
-  // Checks if the viewport shrank significantly, which happens when
-  // Android/iOS enters split-screen or a floating window appears.
+  // Flags a viewport that shrinks well below its settled size, which is
+  // what Android/iOS split-screen and a resized desktop window do.
+  //
+  // The old check compared against the size *before* the exam went
+  // fullscreen, so on a 1366×768 laptop — where the browser toolbar is
+  // about 16% of the height — entering fullscreen was itself a
+  // violation, and so was every "Return to quiz". Five violations
+  // auto-submit, so honest students could lose their paper early.
   const onResize = () => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const widthDelta = Math.abs(w - initialWidth) / initialWidth;
-    const heightDelta = Math.abs(h - initialHeight) / initialHeight;
-
-    // >15% size change = probable split-screen
-    if (widthDelta > 0.15 || heightDelta > 0.15) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const dpr = window.devicePixelRatio || 1;
+    if (!base || settling() || Math.abs(dpr - base.dpr) > 0.01) { measure(); return; }  // fullscreen, rotation or zoom
+    if (isSuspiciousShrink(base, w, h)) {
       flag("Screen resized (possible split-screen or floating window)");
-      initialWidth = w;
-      initialHeight = h;
     }
+    if (w > base.w || h > base.h || isSuspiciousShrink(base, w, h)) measure();
   };
 
   // ── Right-click / context menu block ─────────────────────────
@@ -204,14 +256,12 @@ export function createLockdownSession({
   // same but the inner viewport shrinks (desktop only).
   let devtoolsOpen = false;
   const checkDevtools = () => {
-    const threshold = 160;
-    const widthDiff = window.outerWidth - window.innerWidth;
-    const heightDiff = window.outerHeight - window.innerHeight;
-    const isOpen = widthDiff > threshold || heightDiff > threshold;
-    if (isOpen && !devtoolsOpen) {
-      devtoolsOpen = true;
-      flag("Developer tools detected");
-    }
+    if (!base || settling()) return;
+    if (Math.abs((window.devicePixelRatio || 1) - base.dpr) > 0.01) { measure(); return; }
+    const isOpen = devtoolsLikelyOpen(baseGap,
+      window.outerWidth - window.innerWidth,
+      window.outerHeight - window.innerHeight);
+    if (isOpen && !devtoolsOpen) flag("Developer tools detected");
     devtoolsOpen = isOpen;
   };
 
@@ -242,6 +292,7 @@ export function createLockdownSession({
         if (rfs) await rfs.call(container);
       } catch (_) {}
     }
+    settle();
   };
 
   // ── Setup ───────────────────────────────────────────────────
@@ -250,6 +301,9 @@ export function createLockdownSession({
   document.addEventListener("webkitfullscreenchange", onFullscreenChange);
   window.addEventListener("blur", onBlur);
   window.addEventListener("resize", onResize);
+  window.addEventListener("orientationchange", onOrientation);
+  // First measurement once the fullscreen switch has settled.
+  const firstMeasure = setTimeout(() => { if (!base) measure(); }, SETTLE_MS + 100);
   document.addEventListener("contextmenu", onContextMenu);
   document.addEventListener("copy", onClipboard);
   document.addEventListener("paste", onClipboard);
@@ -265,11 +319,14 @@ export function createLockdownSession({
 
   // ── Cleanup ─────────────────────────────────────────────────
   const cleanup = () => {
+    ended = true;
+    clearTimeout(firstMeasure);
     document.removeEventListener("visibilitychange", onVisibility);
     document.removeEventListener("fullscreenchange", onFullscreenChange);
     document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("resize", onResize);
+    window.removeEventListener("orientationchange", onOrientation);
     document.removeEventListener("contextmenu", onContextMenu);
     document.removeEventListener("copy", onClipboard);
     document.removeEventListener("paste", onClipboard);

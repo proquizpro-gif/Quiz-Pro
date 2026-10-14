@@ -20,12 +20,16 @@ import { useAuth } from "../lib/AuthContext";
    archive or soft-delete rooms.
    ================================================================== */
 export default function ClassroomManager({ classrooms, setClassrooms }) {
-  const { user, profile } = useAuth();
+  const { user, profile, isAdmin } = useAuth();
   const [creating, setCreating] = useState(false);
   const [toast, setToast] = useState(null);
   const toast2 = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3500); };
 
   const mine = classrooms.filter(c => c.owner_id === user.id);
+  /* Rooms this teacher was added to as a co-owner. They were loaded but
+     never shown, so a co-teacher had no way to see the roster or the
+     join code. Admins see every room in the admin panel instead. */
+  const shared = isAdmin ? [] : classrooms.filter(c => c.owner_id !== user.id && !c.deleted_at);
 
   /* ── Soft-delete: detaches quizzes so attempts survive ───────── */
   const removeRoom = async (room) => {
@@ -65,7 +69,7 @@ export default function ClassroomManager({ classrooms, setClassrooms }) {
         />
       )}
 
-      {!mine.length && !creating && (
+      {!mine.length && !shared.length && !creating && (
         <Empty icon={School} title="No classrooms yet"
           hint="Create a classroom, then share its 6-character join code with your students. Quizzes you assign to it are visible only to its members."/>
       )}
@@ -78,6 +82,20 @@ export default function ClassroomManager({ classrooms, setClassrooms }) {
             onToast={toast2}/>
         ))}
       </div>
+
+      {shared.length > 0 && (
+        <>
+          <div className="pt-2">
+            <h3 className="text-sm font-bold text-slate-900">Shared with me</h3>
+            <p className="text-xs text-slate-400">Classrooms where you are a co-owner</p>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {shared.map(room => (
+              <ClassroomCard key={room.id} room={room} coOwned onToast={toast2}/>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -156,7 +174,7 @@ function TypedConfirm({ roomName, onConfirm, onCancel }) {
   );
 }
 
-function ClassroomCard({ room, onDelete, onToggleArchive, onToast }) {
+function ClassroomCard({ room, onDelete, onToggleArchive, onToast, coOwned = false }) {
   const { user, profile } = useAuth();
   const [open, setOpen]       = useState(false);
   const [members, setMembers] = useState(null);
@@ -251,16 +269,17 @@ function ClassroomCard({ room, onDelete, onToggleArchive, onToast }) {
             {room.section && <Badge tone="violet">Section {room.section}</Badge>}
             {room.year && <Badge tone="sky">{room.year}</Badge>}
             {room.is_archived && <Badge tone="amber">Archived</Badge>}
+            {coOwned && <Badge tone="slate">Co-owner</Badge>}
           </div>
           <h4 className="mt-2 truncate font-bold text-slate-900">{room.name}</h4>
           <p className="mt-0.5 text-xs text-slate-400">Created {dateStr(room.created_at)}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        {!coOwned && <div className="flex shrink-0 items-center gap-1">
           <button onClick={onToggleArchive} className="rounded-xl p-2 text-slate-300 transition hover:bg-amber-50 hover:text-amber-600" title={room.is_archived ? "Restore" : "Archive (disables join code)"}>
             {room.is_archived ? <ArchiveRestore size={14}/> : <Archive size={14}/>}
           </button>
           <button onClick={() => setConfirmDelete(true)} className="rounded-xl p-2 text-slate-300 transition hover:bg-rose-50 hover:text-rose-500" title="Remove classroom"><Trash2 size={14}/></button>
-        </div>
+        </div>}
       </div>
 
       {/* ── Typed confirmation for delete ─────────────────────────── */}
@@ -283,13 +302,13 @@ function ClassroomCard({ room, onDelete, onToggleArchive, onToast }) {
       </div>
 
       {/* ── Co-owners toggle ──────────────────────────────────────── */}
-      <button onClick={() => { setShowCoOwners(v => !v); if (!coOwners && !showCoOwners) loadMembers(); }}
+      {!coOwned && <button onClick={() => { setShowCoOwners(v => !v); if (!coOwners && !showCoOwners) loadMembers(); }}
         className="mt-3 flex w-full items-center justify-between rounded-xl px-1 py-2 text-xs font-semibold text-slate-500 transition hover:text-slate-800">
         <span className="flex items-center gap-1.5"><UserCog size={13}/>{coOwners ? `${coOwners.length} co-owner${coOwners.length === 1 ? "" : "s"}` : "Manage co-owners"}</span>
         {showCoOwners ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
-      </button>
+      </button>}
 
-      {showCoOwners && (
+      {showCoOwners && !coOwned && (
         <div className="mt-1 space-y-2">
           <div className="flex gap-2">
             <input className={`${inp} py-2 text-xs`} placeholder="Add faculty co-owner by email" value={coEmail}
