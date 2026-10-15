@@ -57,7 +57,7 @@ export const DOMAINS = [
   { id:"C", name:"Quantitative Reasoning",        short:"QR",       icon:"🧮", cluster:"P", units:["Number Series","Missing Numbers","Mathematical Patterns","Quantitative Comparisons","Estimation","Multi-step Reasoning"] },
   { id:"D", name:"Algebraic Thinking",            short:"Algebra",  icon:"📐", cluster:"P", units:["Basic Algebra","Linear Equations","Simultaneous Equations","Inequalities","Functions"] },
   { id:"E", name:"Data Interpretation",           short:"DI",       icon:"📊", cluster:"D", units:["Tables","Bar Charts","Pie Charts","Line Graphs","Percentage Change","Growth Rates","Multi-variable Data"] },
-  { id:"F", name:"Logical & Analytical Reasoning",short:"Logic",    icon:"🔍", cluster:"R", units:["Logical Sequences","Arrangement","Classification","Conditional Reasoning","Deductive Reasoning","Analytical Puzzles"] },
+  { id:"F", name:"Logical & Analytical Reasoning",short:"Logic",    icon:"🔍", cluster:"R", units:["Logical Sequences","Arrangement","Classification","Conditional Reasoning","Deductive Reasoning","Analytical Puzzles","Coding-Decoding","Blood Relations","Direction Sense","Data Sufficiency"] },
   { id:"G", name:"Applied Quantitative Reasoning",short:"Applied",  icon:"🌍", cluster:"D", units:["Workplace Problems","Financial Literacy","Statistical Interpretation","Decision Making","Probability & Chance"] },
   { id:"H", name:"Mathematical Problem Solving",  short:"Solving",  icon:"🎯", cluster:"R", units:["Complex Multi-step","Modelling","Evaluation","Mathematical Reasoning","Measurement & Geometry"] },
 ];
@@ -169,6 +169,13 @@ for (const L of QAAPF_LEGACY) {
 export const bankItemByStem = stem => BANK_BY_STEM.get(norm(stem)) || null;
 export const bankItemById = id => BANK_BY_ID.get(id) || null;
 export const isBuiltInStem = stem => BANK_BY_STEM.has(norm(stem)) || LEGACY_BY_STEM.has(norm(stem));
+
+/* The worked explanation for a built-in question, or null. Looked up
+   by the question's text, so it works for old attempts and bank rows. */
+export function explanationFor(question) {
+  const b = verifiedItemFor(typeof question === "string" ? question : question?.question);
+  return b?.x || null;
+}
 
 /* The verified bank item for a question text: the item itself, or the
    item that replaced an earlier wording. null for teacher questions. */
@@ -722,6 +729,42 @@ export function computeQAAPFProfile(attempts, allQuestions) {
 export const PAPER_SIZES = [4, 6];               // questions per domain
 export const DEFAULT_PER_DOMAIN = 6;             // 48 questions, 40 minutes
 
+/* Difficulty mixes.
+
+   challenging (default from v4.1): 15% easy, 25% medium, 60% hard. Asked
+     for by the aptitude trainers: on the balanced paper most students
+     scored high and the ones genuinely behind did not stand out. The
+     counts are fixed per reporting area (a pair of domains), so the four
+     areas that decisions rest on are always equally hard; within a pair,
+     which domain takes the extra hard item is drawn at random.
+   balanced: equal easy, medium and hard in every domain (the v4.0 paper).
+
+   Scores from the two mixes are not comparable — compare a cohort's
+   start and end of term on the same mix. */
+export const MIXES = {
+  challenging: { id: "challenging", label: "Challenging", shares: { 1: 0.15, 2: 0.25, 3: 0.60 }, note: "15% easy · 25% medium · 60% hard" },
+  balanced:    { id: "balanced",    label: "Balanced",    shares: null,                          note: "equal easy, medium and hard" },
+};
+export const DEFAULT_MIX = "challenging";
+
+/* Easy/medium/hard counts for one reporting area (two domains of
+   perDomain questions each) under a share-based mix. At least one easy
+   question per area, so the weakest students still show something. */
+export function clusterMix(perDomain, mixId = DEFAULT_MIX) {
+  const mix = MIXES[mixId] || MIXES[DEFAULT_MIX];
+  if (!mix.shares) { const d = difficultyMix(perDomain); return { 1: d[1] * 2, 2: d[2] * 2, 3: d[3] * 2 }; }
+  const total = perDomain * 2;
+  const e = Math.max(1, Math.round(total * mix.shares[1]));
+  const m = Math.round(total * mix.shares[2]);
+  return { 1: e, 2: m, 3: total - e - m };
+}
+
+/* Whole-paper counts, for labels. */
+export function paperMix(perDomain, mixId = DEFAULT_MIX) {
+  const c = clusterMix(perDomain, mixId), k = CLUSTERS.length;
+  return { 1: c[1] * k, 2: c[2] * k, 3: c[3] * k, total: perDomain * DOMAINS.length };
+}
+
 export function difficultyMix(perDomain) {
   if (perDomain <= 3) return { 1: 1, 2: 1, 3: 1 };
   if (perDomain <= 4) return { 1: 1, 2: 2, 3: 1 };
@@ -745,10 +788,25 @@ export function minutesForCount(n) {
   const raw = Math.round((n * RACE_SECONDS_PER_QUESTION) / 60 / 5) * 5;
   return Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, raw));
 }
+/* Time allowed per question by difficulty. A balanced paper averages
+   the race pace of 50 s; a hard-heavy paper gets more time, because a
+   race that nobody can finish measures only speed. */
+export const SECONDS_BY_LEVEL = { 1: 40, 2: 50, 3: 60 };
+function minutesForLevels(counts) {
+  const sec = [1, 2, 3].reduce((s, lv) => s + (counts[lv] || 0) * SECONDS_BY_LEVEL[lv], 0);
+  return Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Math.round(sec / 60 / 5) * 5));
+}
 /* Suggested minutes for a paper of `perDomain` questions per domain. */
-export const suggestedMinutes = perDomain => minutesForCount(perDomain * DOMAINS.length);
-/* Suggested minutes for an existing list of questions. */
-export const minutesForItems = items => minutesForCount((items || []).length);
+export const suggestedMinutes = (perDomain, mixId = DEFAULT_MIX) => minutesForLevels(paperMix(perDomain, mixId));
+/* Suggested minutes for an existing list of questions (bank items or rows). */
+export function minutesForItems(items) {
+  const counts = { 1: 0, 2: 0, 3: 0 };
+  for (const it of items || []) {
+    const lv = it?.lv ?? (it?.difficulty === "easy" ? 1 : it?.difficulty === "hard" ? 3 : 2);
+    counts[lv]++;
+  }
+  return minutesForLevels(counts);
+}
 
 /* Seconds per question and questions per minute for a paper. */
 export function paceOf(n, minutes) {
@@ -781,9 +839,9 @@ export function shuffleWith(arr, rng = Math.random) {
 /* Pick n items from one domain: the blueprint's difficulty mix, and
    within each tier the sub-skill used least so far, so a domain is not
    represented by four "Number Series" items. */
-export function pickDomainItems(domId, n, rng = Math.random) {
+export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null) {
   const pool = QAAPF_QUESTIONS.filter(q => q.d === domId);
-  const mix = difficultyMix(n);
+  const mix = mixCounts || difficultyMix(n);
   const unitUse = new Map();
   const out = [];
   for (const lv of [1, 2, 3]) {
@@ -798,8 +856,23 @@ export function pickDomainItems(domId, n, rng = Math.random) {
   return out;
 }
 
-export function buildBlueprint(perDomain = DEFAULT_PER_DOMAIN, rng = Math.random) {
-  return DOMAINS.flatMap(d => pickDomainItems(d.id, perDomain, rng));
+export function buildBlueprint(perDomain = DEFAULT_PER_DOMAIN, rng = Math.random, mixId = DEFAULT_MIX) {
+  if (!MIXES[mixId]?.shares) return DOMAINS.flatMap(d => pickDomainItems(d.id, perDomain, rng));
+  const out = [];
+  for (const c of CLUSTERS) {
+    const total = clusterMix(perDomain, mixId);
+    /* Split the area's counts between its two domains: the first gets the
+       larger half of the easy and medium questions, and the domain that
+       goes first is drawn at random, so neither domain is always the
+       harder one. */
+    const [x, y] = rng() < 0.5 ? c.domains : [...c.domains].reverse();
+    const ex = Math.ceil(total[1] / 2), mx = Math.ceil(total[2] / 2);
+    const mixX = { 1: ex, 2: mx, 3: perDomain - ex - mx };
+    const mixY = { 1: total[1] - ex, 2: total[2] - mx, 3: perDomain - (total[1] - ex) - (total[2] - mx) };
+    const picked = { [x]: pickDomainItems(x, perDomain, rng, mixX), [y]: pickDomainItems(y, perDomain, rng, mixY) };
+    out.push(...picked[c.domains[0]], ...picked[c.domains[1]]);
+  }
+  return out;
 }
 
 /* A short code that identifies the exact set of questions on a paper,

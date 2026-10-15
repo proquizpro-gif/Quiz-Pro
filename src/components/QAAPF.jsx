@@ -22,7 +22,7 @@ import {
   QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE,
   Q_LEVELS, DOMAINS, CLUSTERS, CLUSTER_RELIABLE_MIN, RAPID_SECONDS, diffLabel,
   computeQAAPFProfile, selectProfileAttempts, isBaselineQuiz, BASELINE_TITLE_PREFIX,
-  PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, formCode, suggestedMinutes, minutesForItems,
+  PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, MIXES, DEFAULT_MIX, clusterMix, paperMix, formCode, suggestedMinutes, minutesForItems,
   paceOf, TIME_PRESETS, RACE_SECONDS_PER_QUESTION,
   bankRowFor, isRowVerified, planBankRepairs, verifiedItemFor, norm,
 } from "../lib/qaapf-core.js";
@@ -123,6 +123,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
   const [classroomId, setClassroomId] = useState(rooms[0]?.id || "");
   const [paper, setPaper]             = useState("new");            // "new" | id of an existing baseline quiz
   const [perDomain, setPerDomain]     = useState(DEFAULT_PER_DOMAIN);
+  const [mixId, setMixId]             = useState(DEFAULT_MIX);
   const [minutesEdited, setMinutesEdited] = useState(null);
   const [showAnswers, setShowAnswers] = useState(false);
   const [busy, setBusy]               = useState(false);
@@ -136,9 +137,11 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
     const rowById = new Map(questions.map(r => [r.id, r]));
     return template.question_ids.map(id => rowById.get(id)).filter(Boolean).map(r => verifiedItemFor(r.question) || r);
   }, [template, questions]);
-  const suggested = template ? minutesForItems(templateItems) : suggestedMinutes(perDomain);
+  const suggested = template ? minutesForItems(templateItems) : suggestedMinutes(perDomain, mixId);
   const minutes = minutesEdited ?? (template ? Math.round((template.duration_sec || 0) / 60) || suggested : suggested);
-  const mix = difficultyMix(perDomain);
+  const areaMix = clusterMix(perDomain, mixId);
+  const whole = paperMix(perDomain, mixId);
+  const pct = n => Math.round((n / whole.total) * 100);
   const pace = paceOf(totalQ, minutes);
 
   /* Make sure each bank item on the paper exists in the question bank in
@@ -199,7 +202,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
           if (b) items.push(b); else if (row) extraIds.push(id);
         }
       } else {
-        items = buildBlueprint(perDomain);
+        items = buildBlueprint(perDomain, Math.random, mixId);
       }
 
       const { ids, repaired, added } = await ensureVerifiedRows(items);
@@ -287,8 +290,8 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
           <div>
             <h3 className="text-sm font-bold text-slate-900">Generate a diagnostic baseline test</h3>
             <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              One paper built to a fixed blueprint: the same number of questions in each of the 8 domains, at least two easy and two hard in each,
-              spread across sub-skills. Every question is checked against the verified bank before the quiz is created.
+              One paper built to a fixed blueprint: the same number of questions in each of the 8 domains and the same mix of easy, medium
+              and hard in each of the 4 reporting areas, spread across sub-skills. Every question is checked against the verified bank before the quiz is created.
             </p>
           </div>
         </div>
@@ -319,13 +322,28 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
             <label className="mb-1 block text-xs font-semibold text-slate-500">Paper length</label>
             <select className={inp} value={perDomain} disabled={!!template} onChange={e => { setPerDomain(Number(e.target.value)); setMinutesEdited(null); }}>
               {PAPER_SIZES.map(n => {
-                const m = difficultyMix(n);
-                const pc = paceOf(n * DOMAINS.length, suggestedMinutes(n));
+                const m = paperMix(n, mixId);
+                const pc = paceOf(n * DOMAINS.length, suggestedMinutes(n, mixId));
                 const label = n === DEFAULT_PER_DOMAIN ? "recommended" : "shorter, less precise";
-                return <option key={n} value={n}>{n * DOMAINS.length} questions · {suggestedMinutes(n)} min · {pc.perMinute} a minute · {m[1]} easy / {m[2]} medium / {m[3]} hard per domain ({label})</option>;
+                return <option key={n} value={n}>{n * DOMAINS.length} questions · {suggestedMinutes(n, mixId)} min · {pc.perMinute} a minute · {m[1]} easy / {m[2]} medium / {m[3]} hard ({label})</option>;
               })}
             </select>
             <p className="mt-1 text-[10px] text-slate-400">A shorter paper widens each score's likely range: about ±17 points at 50% on 32 questions, ±14 on 48.</p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Difficulty</label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {Object.values(MIXES).map(m => (
+                <button key={m.id} type="button" disabled={!!template} onClick={() => { setMixId(m.id); setMinutesEdited(null); }}
+                  className={`rounded-xl border px-3 py-2 text-left text-xs transition disabled:opacity-50 ${mixId === m.id ? "border-violet-400 bg-violet-50 text-violet-800" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
+                  <span className="font-bold">{m.label}{m.id === DEFAULT_MIX ? " (recommended)" : ""}</span> — {m.note}
+                  <span className="mt-0.5 block text-[10px] text-slate-500">{m.id === "challenging"
+                    ? "Separates students who are genuinely behind from the rest; most will score well below 100%."
+                    : "The v4.0 paper. Use it to compare with a cohort that sat a balanced baseline earlier."}</span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-[10px] text-slate-400">Compare start and end of term on the same difficulty — scores from the two are not comparable.</p>
           </div>
           <div>
             <label className="mb-1 block text-xs font-semibold text-slate-500">Time limit — a race against the clock</label>
@@ -344,7 +362,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
                 ? "Slower than one question a minute — this is not a race."
                 : pace.tight
                 ? "Very fast: many students will not reach the hard questions at the end, so their difficulty profile rests on fewer questions."
-                : `Suggested ${suggested} min (about ${RACE_SECONDS_PER_QUESTION} s a question).`}
+                : `Suggested ${suggested} min (easy 40 s, medium 50 s, hard 60 s a question).`}
             </p>
           </div>
         </div>
@@ -363,15 +381,16 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
             <p className="text-xs text-slate-600">The same {template.question_ids.length} questions as <strong>{template.title}</strong>. Built-in questions are re-checked against the verified bank first.</p>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
+              <p className="sm:col-span-2 text-xs text-slate-600">{whole[1]} easy ({pct(whole[1])}%) · {whole[2]} medium ({pct(whole[2])}%) · {whole[3]} hard ({pct(whole[3])}%), in that order on the paper.</p>
               {CLUSTERS.map(c => (
                 <div key={c.id} className="rounded-lg border border-slate-100 bg-white p-2">
                   <div className="mb-1 flex items-center justify-between text-[11px] font-bold text-slate-700">
-                    <span>{c.icon} {c.name}</span><span className={`${num} text-slate-400`}>{perDomain * c.domains.length} Q</span>
+                    <span>{c.icon} {c.name}</span><span className={`${num} text-slate-400`}>{perDomain * c.domains.length} Q · {areaMix[1]}E {areaMix[2]}M {areaMix[3]}H</span>
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {c.domains.map(id => {
                       const d = DOMAINS.find(x => x.id === id);
-                      return <span key={id} className="rounded-md border border-slate-100 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{d.icon} {d.short} · {mix[1]}E {mix[2]}M {mix[3]}H</span>;
+                      return <span key={id} className="rounded-md border border-slate-100 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">{d.icon} {d.short} · {perDomain} Q</span>;
                     })}
                   </div>
                 </div>
@@ -846,7 +865,9 @@ function LevelsGuide() {
       <div className={`${card} p-5`}>
         <h3 className="mb-2 text-sm font-bold text-slate-900">Blueprint and item quality</h3>
         <ul className="list-disc space-y-1.5 pl-5 text-[12px] leading-relaxed text-slate-600">
-          {PAPER_SIZES.map(n => { const m = difficultyMix(n); const pc = paceOf(n * DOMAINS.length, suggestedMinutes(n)); return <li key={n}><strong>{n * DOMAINS.length} questions in {suggestedMinutes(n)} minutes</strong> ({pc.perMinute} a minute, {pc.secPerQuestion} s each) — {n} per domain ({m[1]} easy · {m[2]} medium · {m[3]} hard){n === DEFAULT_PER_DOMAIN ? ", the recommended paper" : ", shorter and less precise"}.</li>; })}
+          {PAPER_SIZES.map(n => { const m = paperMix(n, DEFAULT_MIX); const mins = suggestedMinutes(n, DEFAULT_MIX); const pc = paceOf(n * DOMAINS.length, mins); return <li key={n}><strong>{n * DOMAINS.length} questions in {mins} minutes</strong> ({pc.perMinute} a minute, {pc.secPerQuestion} s each) — {n} per domain; {m[1]} easy · {m[2]} medium · {m[3]} hard{n === DEFAULT_PER_DOMAIN ? ", the recommended paper" : ", shorter and less precise"}.</li>; })}
+          <li><strong>Challenging by default (v4.1).</strong> About 15% easy, 25% medium and 60% hard, with the same counts in each of the four reporting areas. A balanced paper (equal thirds, as in v4.0) is still available; compare start and end of term on the same mix. Difficulty is rated by solving effort: easy is one step or recall, medium two steps or one concept applied, hard three or more steps, combined ideas or a trap.</li>
+          <li><strong>Explanations.</strong> Every reasoning item, and every item added from v4.1, has a worked explanation. It appears in the answer review (when the quiz shows answers), in the question bank and on the printed answer key.</li>
           <li><strong>A race against the clock.</strong> More than one question a minute, inside a 30–45 minute sitting; students see their pace against the target during the test. Questions run easy → medium → hard, shuffled within each block; options are shuffled for each student.</li>
           <li>Every item has one correct option among four, needs no other question to answer, and carries no hint. Answer positions are balanced across A–D. Two people solve every new or changed item before it enters the bank, and an automated check runs before each release.</li>
           <li>Confidence in each classification draws on evidence volume, breadth, difficulty spread, completion, speed, performance above chance, difficulty coherence, pace, answers faster than {RAPID_SECONDS} seconds while working, and proctoring flags.</li>
@@ -971,6 +992,7 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
                   <div className="mt-1 flex flex-wrap gap-2">
                     {q.o.map((o, oi) => <span key={oi} className={`text-[10px] ${oi === q.c ? "font-semibold text-emerald-700" : "text-slate-400"}`}>{"ABCD"[oi]}. {oi === q.c ? "✓ " : ""}{o}</span>)}
                   </div>
+                  {q.x && <p className="mt-1 text-[10px] leading-relaxed text-slate-500"><span className="font-semibold text-slate-600">Why: </span>{q.x}</p>}
                 </div>
               </div>
             );

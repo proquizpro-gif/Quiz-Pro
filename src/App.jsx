@@ -22,7 +22,7 @@ import { downloadCSV } from "./lib/csv";
 import { examClock, remainingAt, quizSettingsProblem } from "./lib/exam-logic.js";
 import { pingKeepAlive } from "./lib/keepalive";
 import AIAssistant from "./components/AIAssistant";
-import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, rekeyAttempts, QAAPF_BANK_VERSION, computeQAAPFProfile, getQLevel } from "./lib/qaapf-core.js";
+import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, rekeyAttempts, QAAPF_BANK_VERSION, computeQAAPFProfile, getQLevel, explanationFor, verifiedItemFor } from "./lib/qaapf-core.js";
 import LiveInvigilation from "./components/LiveInvigilation.jsx";
 
 /* Faculty and admin screens load on first use, so a student's phone
@@ -706,6 +706,18 @@ function QuestionBank({ questions, setQuestions }) {
                           <input type="checkbox" checked={selected.has(x.id)} onChange={() => toggleOne(x.id)} className="mt-1 h-4 w-4 shrink-0 accent-violet-600"/>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-1.5">
+                              {(() => {
+                                /* A built-in question whose stored answer disagrees with the
+                                   verified key — the likely source of "this answer is wrong". */
+                                const b = verifiedItemFor(x.question);
+                                if (!b) return null;
+                                const n = t => String(t ?? "").trim().toLowerCase();
+                                const stale = n(x.options?.[x.correct]) !== n(b.o[b.c]);
+                                return <>
+                                  <Badge tone="slate">{b.id}</Badge>
+                                  {stale && <Badge tone="rose">Out of date — QAAPF → Question bank → Repair</Badge>}
+                                </>;
+                              })()}
                               {x.difficulty && <Badge tone={x.difficulty==="hard"?"rose":x.difficulty==="easy"?"emerald":"amber"}>{x.difficulty}</Badge>}
                               <Badge tone="slate">{x.topic}</Badge>
                               <Badge tone="slate">{x.points} pt</Badge>
@@ -1595,7 +1607,10 @@ function ItemAnalysis({ attempts }) {
               <div key={r.key} className={`rounded-xl border p-4 ${r.verdict==="inverted"?"border-rose-200 bg-rose-50/40":"border-slate-200"}`}>
                 <div className="flex items-start justify-between gap-3">
                   <p className="flex-1 text-sm font-medium text-slate-800">{r.question}</p>
-                  <Badge tone={tone(r.verdict)}>{label(r.verdict)}</Badge>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {verifiedItemFor(r.question) && <Badge tone="slate">{verifiedItemFor(r.question).id}</Badge>}
+                    <Badge tone={tone(r.verdict)}>{label(r.verdict)}</Badge>
+                  </div>
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-4 text-xs">
@@ -1651,22 +1666,31 @@ function printQuizPaper(quiz, questions, { withKey }) {
   if (!qs.length) { alert("This quiz has no questions to print."); return; }
 
   const esc = t => String(t ?? "").replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+  /* Built-in questions print the verified key, found by its answer text,
+     so a stale copy in the bank can never put a wrong answer on paper. */
+  const keyOf = q => {
+    const b = verifiedItemFor(q.question);
+    const k = b ? q.options.findIndex(o => String(o).trim().toLowerCase() === String(b.o[b.c]).trim().toLowerCase()) : -1;
+    return k >= 0 ? k : q.correct;
+  };
   const total = qs.reduce((sum, q) => sum + (q.points || 1), 0);
 
   const body = qs.map((q, i) => `
     <div class="q">
       <div class="stem"><span class="n">${i + 1}.</span><span>${esc(q.question)}</span><span class="pts">[${q.points || 1}]</span></div>
       <ol class="opts">
-        ${q.options.map((o, oi) => `<li class="${withKey && oi === q.correct ? "key" : ""}">${esc(o)}</li>`).join("")}
+        ${q.options.map((o, oi) => `<li class="${withKey && oi === keyOf(q) ? "key" : ""}">${esc(o)}</li>`).join("")}
       </ol>
     </div>`).join("");
 
+  const explained = qs.map((q, i) => ({ n: i + 1, x: explanationFor(q.question), id: verifiedItemFor(q.question)?.id })).filter(e => e.x);
   const keyTable = withKey ? `
     <div class="keybox">
       <h2>Answer key</h2>
       <table>${qs.map((q, i) =>
-        `<tr><td class="kn">${i + 1}</td><td class="kv">${"ABCD"[q.correct]}</td></tr>`
+        `<tr><td class="kn">${i + 1}</td><td class="kv">${"ABCD"[keyOf(q)]}</td></tr>`
       ).join("")}</table>
+      ${explained.length ? `<h2 style="margin-top:18px">Explanations</h2>${explained.map(e => `<p class="ex"><b>${e.n}.</b> ${esc(e.x)}${e.id ? ` <span class="exid">[${e.id}]</span>` : ""}</p>`).join("")}` : ""}
     </div>` : "";
 
   const w = window.open("", "_blank");
@@ -1694,6 +1718,8 @@ function printQuizPaper(quiz, questions, { withKey }) {
     .keybox td { border: 1px solid #999; padding: 3px 11px; font-size: 10pt; text-align: center; }
     .kn { background: #f0f0f0; font-weight: 600; }
     .kv { font-weight: 700; }
+    .ex { font-size: 9.5pt; margin: 0 0 6px; }
+    .exid { color: #888; font-size: 8pt; }
     footer { margin-top: 26px; border-top: 1px solid #bbb; padding-top: 7px; font-size: 8.5pt; color: #666; text-align: center; }
   </style></head><body>
     <header>
@@ -3152,6 +3178,9 @@ function Result({ quizzes, attempt, attempts, userId, onHome }) {
                     })}
                     {it.chosen===null && <div className="text-xs italic text-slate-400">Not answered.</div>}
                   </div>
+                  {explanationFor(it.question) && (
+                    <p className="mt-2.5 ml-7 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600"><span className="font-semibold text-slate-700">Why: </span>{explanationFor(it.question)}</p>
+                  )}
                 </div>
               );
             })}
