@@ -726,8 +726,8 @@ export function computeQAAPFProfile(attempts, allQuestions) {
    On a shorter paper each score's likely range widens (about ±17 points
    at 50% on 32 questions, ±14 on 48) and each reporting area rests on 8
    rather than 12 questions. */
-export const PAPER_SIZES = [4, 6];               // questions per domain
-export const DEFAULT_PER_DOMAIN = 6;             // 48 questions, 40 minutes
+export const PAPER_SIZES = [4, 5, 6];            // questions per domain: 32, 40, 48
+export const DEFAULT_PER_DOMAIN = 5;             // 40 questions in 45 minutes (v4.3)
 
 /* Difficulty mixes.
 
@@ -742,32 +742,55 @@ export const DEFAULT_PER_DOMAIN = 6;             // 48 questions, 40 minutes
    Scores from the two mixes are not comparable — compare a cohort's
    start and end of term on the same mix. */
 export const MIXES = {
-  challenging: { id: "challenging", label: "Challenging", shares: { 1: 0.15, 2: 0.25, 3: 0.60 }, note: "15% easy · 25% medium · 60% hard" },
+  challenging: { id: "challenging", label: "Challenging", shares: { 1: 0.15, 2: 0.25, 3: 0.60 }, note: "15% easy · 25% medium · 60% hard, ending with CAT-level questions" },
   balanced:    { id: "balanced",    label: "Balanced",    shares: null,                          note: "equal easy, medium and hard" },
 };
 export const DEFAULT_MIX = "challenging";
 
-/* Easy/medium/hard counts for one reporting area (two domains of
-   perDomain questions each) under a share-based mix. At least one easy
-   question per area, so the weakest students still show something. */
-export function clusterMix(perDomain, mixId = DEFAULT_MIX) {
+/* The paper's plan: for each reporting area, how many easy (1), medium
+   (2), hard (3) and CAT-level ("cat") questions it gets.
+
+   challenging: the whole paper is 15% easy, 25% medium, 60% hard
+   (40 questions → 6 / 10 / 24). Hard questions are shared as equally as
+   possible between the four areas; the easy questions that do not divide
+   evenly go first to areas without an extra hard one, so the areas stay
+   as close in difficulty as possible. Each area's hard block includes one
+   CAT/XAT-level question, placed at the very end of the paper.
+   balanced: v4.0 — equal easy, medium and hard per domain, no CAT items. */
+export function paperPlan(perDomain, mixId = DEFAULT_MIX, rng = Math.random) {
   const mix = MIXES[mixId] || MIXES[DEFAULT_MIX];
-  if (!mix.shares) { const d = difficultyMix(perDomain); return { 1: d[1] * 2, 2: d[2] * 2, 3: d[3] * 2 }; }
-  const total = perDomain * 2;
-  const e = Math.max(1, Math.round(total * mix.shares[1]));
-  const m = Math.round(total * mix.shares[2]);
-  return { 1: e, 2: m, 3: total - e - m };
+  const k = CLUSTERS.length, T = perDomain * 2;
+  if (!mix.shares) { const d = difficultyMix(perDomain); return CLUSTERS.map(() => ({ 1: d[1] * 2, 2: d[2] * 2, 3: d[3] * 2, cat: 0 })); }
+  const N = perDomain * DOMAINS.length;
+  const E = Math.round(N * mix.shares[1]), M = Math.round(N * mix.shares[2]), H = N - E - M;
+  const order = shuffleWith(CLUSTERS.map((_, i) => i), rng);
+  const hard = CLUSTERS.map(() => Math.floor(H / k));
+  order.slice(0, H % k).forEach(i => hard[i]++);
+  const easy = CLUSTERS.map(() => Math.floor(E / k));
+  const easyFirst = [...order].sort((a, b) => hard[a] - hard[b]);      // stable: areas with fewer hard first
+  easyFirst.slice(0, E % k).forEach(i => easy[i]++);
+  return CLUSTERS.map((_, i) => {
+    const cat = hard[i] >= 4 ? 1 : 0;
+    return { 1: easy[i], 2: T - easy[i] - hard[i], 3: hard[i] - cat, cat };
+  });
 }
 
-/* Whole-paper counts, for labels. */
+/* Whole-paper counts, for labels (deterministic: the totals never vary). */
 export function paperMix(perDomain, mixId = DEFAULT_MIX) {
-  const c = clusterMix(perDomain, mixId), k = CLUSTERS.length;
-  return { 1: c[1] * k, 2: c[2] * k, 3: c[3] * k, total: perDomain * DOMAINS.length };
+  const plan = paperPlan(perDomain, mixId, () => 0);
+  const sum = key => plan.reduce((s, c) => s + c[key], 0);
+  return { 1: sum(1), 2: sum(2), 3: sum(3) + sum("cat"), cat: sum("cat"), total: perDomain * DOMAINS.length };
+}
+/* Kept for older callers: one area's counts, with CAT folded into hard. */
+export function clusterMix(perDomain, mixId = DEFAULT_MIX) {
+  const c = paperPlan(perDomain, mixId, () => 0)[0];
+  return { 1: c[1], 2: c[2], 3: c[3] + c.cat };
 }
 
 export function difficultyMix(perDomain) {
   if (perDomain <= 3) return { 1: 1, 2: 1, 3: 1 };
   if (perDomain <= 4) return { 1: 1, 2: 2, 3: 1 };
+  if (perDomain === 5) return { 1: 1, 2: 2, 3: 2 };
   if (perDomain <= 6) return { 1: 2, 2: 2, 3: 2 };
   if (perDomain <= 8) return { 1: 2, 2: 3, 3: 3 };
   return { 1: 3, 2: 4, 3: 3 };
@@ -791,18 +814,18 @@ export function minutesForCount(n) {
 /* Time allowed per question by difficulty. A balanced paper averages
    the race pace of 50 s; a hard-heavy paper gets more time, because a
    race that nobody can finish measures only speed. */
-export const SECONDS_BY_LEVEL = { 1: 40, 2: 50, 3: 60 };
+export const SECONDS_BY_LEVEL = { 1: 40, 2: 55, 3: 75, cat: 100 };
 function minutesForLevels(counts) {
-  const sec = [1, 2, 3].reduce((s, lv) => s + (counts[lv] || 0) * SECONDS_BY_LEVEL[lv], 0);
+  const sec = [1, 2, 3, "cat"].reduce((s, lv) => s + (counts[lv] || 0) * SECONDS_BY_LEVEL[lv], 0);
   return Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Math.round(sec / 60 / 5) * 5));
 }
 /* Suggested minutes for a paper of `perDomain` questions per domain. */
-export const suggestedMinutes = (perDomain, mixId = DEFAULT_MIX) => minutesForLevels(paperMix(perDomain, mixId));
+export const suggestedMinutes = (perDomain, mixId = DEFAULT_MIX) => { const m = paperMix(perDomain, mixId); return minutesForLevels({ ...m, 3: m[3] - m.cat }); };
 /* Suggested minutes for an existing list of questions (bank items or rows). */
 export function minutesForItems(items) {
-  const counts = { 1: 0, 2: 0, 3: 0 };
+  const counts = { 1: 0, 2: 0, 3: 0, cat: 0 };
   for (const it of items || []) {
-    const lv = it?.lv ?? (it?.difficulty === "easy" ? 1 : it?.difficulty === "hard" ? 3 : 2);
+    const lv = it?.k === "cat" ? "cat" : it?.lv ?? (it?.difficulty === "easy" ? 1 : it?.difficulty === "hard" ? 3 : 2);
     counts[lv]++;
   }
   return minutesForLevels(counts);
@@ -839,15 +862,27 @@ export function shuffleWith(arr, rng = Math.random) {
 /* Pick n items from one domain: the blueprint's difficulty mix, and
    within each tier the sub-skill used least so far, so a domain is not
    represented by four "Number Series" items. */
-export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null) {
+/* exposed: ids of bank items already used on earlier papers. Among
+   items that keep the sub-skill spread even, unseen ones are taken
+   first, so each new paper is as fresh as the bank allows (exposure
+   control) — students who sat, or heard about, an earlier paper do not
+   meet the same questions again. */
+export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null, exposed = null) {
   const pool = QAAPF_QUESTIONS.filter(q => q.d === domId);
   const mix = mixCounts || difficultyMix(n);
   const unitUse = new Map();
+  const seen = q => (exposed && exposed.has(q.id) ? 1 : 0);
   const out = [];
-  for (const lv of [1, 2, 3]) {
-    let candidates = shuffleWith(pool.filter(q => q.lv === lv), rng);
+  for (const lv of ["cat", 3, 2, 1]) {
+    if (!mix[lv]) continue;
+    const fits = lv === "cat" ? (q => q.k === "cat") : lv === 3 ? (q => q.lv === 3 && q.k !== "cat") : (q => q.lv === lv);
+    let candidates = shuffleWith(pool.filter(fits), rng);
     for (let k = 0; k < mix[lv] && candidates.length; k++) {
-      candidates = candidates.slice().sort((a, b) => (unitUse.get(a.u) || 0) - (unitUse.get(b.u) || 0)); // stable: keeps shuffle order within ties
+      /* Stable sort. Never a third item from one sub-skill while others
+         are available; within that, unseen before seen; then the wider
+         spread; then the shuffle order. */
+      const use = q => unitUse.get(q.u) || 0;
+      candidates = candidates.slice().sort((a, b) => ((use(a) >= 2) - (use(b) >= 2)) || (seen(a) - seen(b)) || (use(a) - use(b)));
       const pick = candidates.shift();
       out.push(pick);
       unitUse.set(pick.u, (unitUse.get(pick.u) || 0) + 1);
@@ -856,22 +891,28 @@ export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null) {
   return out;
 }
 
-export function buildBlueprint(perDomain = DEFAULT_PER_DOMAIN, rng = Math.random, mixId = DEFAULT_MIX) {
-  if (!MIXES[mixId]?.shares) return DOMAINS.flatMap(d => pickDomainItems(d.id, perDomain, rng));
+export function buildBlueprint(perDomain = DEFAULT_PER_DOMAIN, rng = Math.random, mixId = DEFAULT_MIX, exposed = null) {
+  if (!MIXES[mixId]?.shares) return DOMAINS.flatMap(d => pickDomainItems(d.id, perDomain, rng, null, exposed));
+  const plan = paperPlan(perDomain, mixId, rng);
   const out = [];
-  for (const c of CLUSTERS) {
-    const total = clusterMix(perDomain, mixId);
-    /* Split the area's counts between its two domains: the first gets the
-       larger half of the easy and medium questions, and the domain that
-       goes first is drawn at random, so neither domain is always the
-       harder one. */
-    const [x, y] = rng() < 0.5 ? c.domains : [...c.domains].reverse();
-    const ex = Math.ceil(total[1] / 2), mx = Math.ceil(total[2] / 2);
-    const mixX = { 1: ex, 2: mx, 3: perDomain - ex - mx };
-    const mixY = { 1: total[1] - ex, 2: total[2] - mx, 3: perDomain - (total[1] - ex) - (total[2] - mx) };
-    const picked = { [x]: pickDomainItems(x, perDomain, rng, mixX), [y]: pickDomainItems(y, perDomain, rng, mixY) };
-    out.push(...picked[c.domains[0]], ...picked[c.domains[1]]);
-  }
+  CLUSTERS.forEach((c, ci) => {
+    /* Split the area's counts between its two domains, level by level:
+       an odd count's extra goes to the domain with fewer so far (ties at
+       random), which leaves both with perDomain questions. */
+    const [a, b] = c.domains;
+    const mixes = { [a]: { 1: 0, 2: 0, 3: 0, cat: 0 }, [b]: { 1: 0, 2: 0, 3: 0, cat: 0 } };
+    const total = d => mixes[d][1] + mixes[d][2] + mixes[d][3] + mixes[d].cat;
+    for (const lv of ["cat", 3, 2, 1]) {
+      const n = plan[ci][lv];
+      mixes[a][lv] += Math.floor(n / 2); mixes[b][lv] += Math.floor(n / 2);
+      if (n % 2) {
+        const pick = total(a) < total(b) ? a : total(b) < total(a) ? b : (rng() < 0.5 ? a : b);
+        mixes[pick][lv]++;
+      }
+    }
+    if (total(a) !== perDomain || total(b) !== perDomain) throw new Error("blueprint split failed");
+    out.push(...pickDomainItems(a, perDomain, rng, mixes[a], exposed), ...pickDomainItems(b, perDomain, rng, mixes[b], exposed));
+  });
   return out;
 }
 
@@ -887,16 +928,27 @@ export function formCode(ids) {
 /* Order of questions on a baseline paper: easy, then medium, then hard,
    shuffled within each block. Weaker students meet questions they can
    do first, and neighbours still see different orders. */
+/* Bank item ids used on the given quizzes, via their question rows. */
+export function exposedItemIds(quizzes, questions) {
+  const rowById = new Map((questions || []).map(r => [r.id, r]));
+  const out = new Set();
+  for (const z of quizzes || []) for (const id of z.question_ids || []) {
+    const b = verifiedItemFor(rowById.get(id)?.question);
+    if (b) out.add(b.id);
+  }
+  return out;
+}
+
 export function difficultyRankOf(question) {
   const b = BANK_BY_STEM.get(norm(question?.question));
-  if (b) return b.lv;
+  if (b) return b.k === "cat" ? 4 : b.lv;
   return question?.difficulty === "easy" ? 1 : question?.difficulty === "hard" ? 3 : 2;
 }
 
 export function orderBaselinePaper(questions, rng = Math.random) {
-  const blocks = { 1: [], 2: [], 3: [] };
+  const blocks = { 1: [], 2: [], 3: [], 4: [] };
   for (const q of questions || []) blocks[difficultyRankOf(q)].push(q);
-  return [...shuffleWith(blocks[1], rng), ...shuffleWith(blocks[2], rng), ...shuffleWith(blocks[3], rng)];
+  return [1, 2, 3, 4].flatMap(r => shuffleWith(blocks[r], rng));
 }
 
 /* ══════════════════════════════════════════════════════════════════

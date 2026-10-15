@@ -49,3 +49,79 @@ The likely source of the wrong answers is **old copies of questions stored in yo
 3. Create a **new** baseline paper. Papers created earlier keep their old composition.
 
 No database change is needed. If STEP6 hasn't been run yet, its instructions in `QUIZPRO_V4.1_AUDIT_NOTES.md` still apply.
+
+---
+
+# v4.3 — review of the 103 new questions, and integration into new papers
+
+## Second-solver review
+
+Each of the 103 questions was solved again from the published bank text, checking: is the key right, is any other option also defensible, is the wording ambiguous, can it be done without a calculator in about a minute, and is the difficulty right?
+
+- **Keys:** all 103 correct.
+- **Replaced (new IDs; earlier answers still scored):**
+  - **C079 → C083.** The answer had two people walking for 18 hours; now two cars and 5 hours.
+  - **E079 → E082.** It needed 1.05⁸ worked out by hand in a no-calculator test; now a doubling-time question you can do mentally.
+- **Reworded:**
+  - **A084:** "divided by 12, 15 or 20" → "each of".
+  - **E072:** savings were called "spending".
+  - **F072:** "my grandfather's only son" could be the mother's father, which makes *cousin* defensible. It now reads "my father's father". The old wording is withdrawn from scoring, so nobody who answered it loses or gains a mark.
+- **Re-rated hard → medium:** E071, G080, G087, H082, F094 (two-step questions).
+- **Clearer explanations:** A084, C081 (now a no-calculator method), G081 (quick check first).
+
+Every domain still has at least 15 hard questions, and answer positions are still exactly even (173 each).
+
+## Integration into baseline papers
+
+New papers already draw on the whole bank. The generator now also **takes questions not used on any of your earlier baseline papers first** (exposure control). Students who sat an earlier paper, or heard about it, don't meet the same questions again, and the reviewed new questions fill the gaps.
+
+- After one earlier paper, a new paper repeats **0 questions on average** (7.7 at random).
+- Three successive papers can be fully fresh.
+- The spread across sub-skills is kept: at most 2 questions from any one sub-skill per domain.
+- The confirmation screen reports how many questions on the new paper were not on any earlier one.
+
+"Same paper for another section" is unchanged and still reuses the exact form, which is what start-versus-end-of-term comparison needs.
+
+## Deploy
+
+Upload the package as before. Then use QAAPF → Question bank → **Repair**, which applies the rewordings to any copies already in your database, and create a new baseline paper.
+
+---
+
+# v4.4 — a real hard tier (bank 4.3)
+
+Trainer feedback: even the questions marked hard were easy. That was true. Many "hard" items were long, but each still used only one standard method.
+
+## New standard
+
+- **Hard** means placement-advanced: TCS NQT Advanced, AMCAT or eLitmus level. A hard question needs an insight, or two ideas combined, and can't be solved with one memorised formula.
+- **CAT-level** means CAT/XAT standard. These are the hardest questions in the bank.
+
+## Bank changes
+
+- **81 existing "hard" items re-rated to medium** because they don't meet the new standard.
+- **94 new questions**, every answer checked by computation:
+  - 32 CAT-level (4 per domain)
+  - 59 hard
+  - 3 medium
+  - Puzzles were brute-forced to confirm a single solution. Syllogisms were model-checked.
+- The bank now holds 786 items: 121 easy, 522 medium, 111 hard and 32 CAT-level.
+
+## Default baseline paper
+
+- **40 questions in 45 minutes**:
+  - 6 easy (15%)
+  - 10 medium (25%)
+  - 24 hard (60%), including 4 CAT-level questions
+- Questions run from easy to hard, and the 4 CAT-level questions come last (one per reporting area). Very few students should finish them, and the student rules now say so.
+- 32- and 48-question papers keep the same proportions. The "balanced" mix never includes CAT-level items.
+
+## What to expect
+
+Scores will be noticeably lower than on earlier papers, and that is intended. Don't compare v4.4 baseline scores directly with earlier papers.
+
+## Deploy
+
+1. Upload the package as before.
+2. Go to QAAPF → Question bank and click **Repair**, which updates levels on copies already in your database.
+3. Create a **new** baseline paper. Papers you created earlier keep their old questions.

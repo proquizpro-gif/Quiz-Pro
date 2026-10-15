@@ -155,16 +155,18 @@ test("bands: cut-points unchanged from v3", () => {
 });
 
 /* ── Blueprint ─────────────────────────────────────────────────── */
-test("race timing: challenging 48 in 45 min, balanced 48 in 40, 32 in 30, always 30–45 min", () => {
-  assert.deepEqual(PAPER_SIZES.map(n => n * DOMAINS.length), [32, 48]);
-  assert.equal(DEFAULT_PER_DOMAIN * DOMAINS.length, 48);
+test("timing: the default is 40 questions in 45 minutes; suggestions stay 30–45 min", () => {
+  assert.deepEqual(PAPER_SIZES.map(n => n * DOMAINS.length), [32, 40, 48]);
+  assert.equal(DEFAULT_PER_DOMAIN * DOMAINS.length, 40);
   assert.equal(DEFAULT_MIX, "challenging");
-  assert.deepEqual(PAPER_SIZES.map(n => suggestedMinutes(n, "balanced")), [30, 40]);
-  assert.deepEqual(PAPER_SIZES.map(n => suggestedMinutes(n, "challenging")), [30, 45]);
-  assert.equal(minutesForItems(buildBlueprint(6, makeRng(5), "balanced")), 40);
-  assert.equal(minutesForItems(buildBlueprint(6, makeRng(5))), 45);
+  assert.deepEqual(PAPER_SIZES.map(n => suggestedMinutes(n, "balanced")), [30, 40, 45]);
+  assert.deepEqual(PAPER_SIZES.map(n => suggestedMinutes(n, "challenging")), [35, 45, 45]);
+  assert.equal(minutesForItems(buildBlueprint(5, makeRng(5))), 45);
   for (const n of [10, 24, 32, 48, 64, 80, 200]) { const m = minutesForCount(n); assert.ok(m >= 30 && m <= 45, `${n} → ${m}`); }
-  for (const per of PAPER_SIZES) for (const m of Object.keys(MIXES)) assert.ok(paceOf(per * 8, suggestedMinutes(per, m)).race, "more than one question a minute");
+  for (const per of PAPER_SIZES) for (const m of Object.keys(MIXES)) {
+    const s = suggestedMinutes(per, m) * 60 / (per * 8);
+    assert.ok(s >= 50 && s <= 90, `${per}/${m}: ${s} s a question`);
+  }
   assert.deepEqual(TIME_PRESETS, [30, 35, 40, 45]);
   const p = paceOf(48, 40);
   assert.equal(p.secPerQuestion, 50); assert.equal(p.perMinute, 1.2); assert.equal(p.tight, false);
@@ -233,30 +235,36 @@ test("balanced blueprint: equal items per domain, fixed difficulty mix, no repea
   }
 });
 
-test("challenging blueprint: about 15/25/60, identical in every reporting area, no repeats", () => {
-  for (let seed = 1; seed <= 40; seed++) for (const per of PAPER_SIZES) {
+test("challenging blueprint: 15/25/60 overall, hard shared evenly, one CAT-level item per area, last on the paper", () => {
+  assert.deepEqual((({ 1: e, 2: m, 3: h, cat }) => [e, m, h, cat])(paperMix(5)), [6, 10, 24, 4]);
+  assert.deepEqual((({ 1: e, 2: m, 3: h }) => [e, m, h])(paperMix(4)), [5, 8, 19]);
+  assert.deepEqual((({ 1: e, 2: m, 3: h }) => [e, m, h])(paperMix(6)), [7, 12, 29]);
+  for (let seed = 1; seed <= 60; seed++) for (const per of PAPER_SIZES) {
     const bp = buildBlueprint(per, makeRng(seed * 13 + per));
+    const want = paperMix(per);
     assert.equal(bp.length, per * DOMAINS.length);
     assert.equal(new Set(bp.map(q => q.id)).size, bp.length);
     for (const d of DOMAINS) assert.equal(bp.filter(q => q.d === d.id).length, per, `${d.id} count`);
-    const want = clusterMix(per);
-    for (const c of CLUSTERS) {
-      const mine = bp.filter(q => c.domains.includes(q.d));
-      for (const lv of [1, 2, 3]) assert.equal(mine.filter(q => q.lv === lv).length, want[lv], `${c.id} lv${lv} seed ${seed}`);
-      assert.ok(mine.some(q => q.lv === 1), "every area has an easy question");
-    }
+    for (const lv of [1, 2, 3]) assert.equal(bp.filter(q => q.lv === lv).length, want[lv], `lv${lv} seed ${seed}`);
+    const hardPerArea = CLUSTERS.map(c => bp.filter(q => c.domains.includes(q.d) && q.lv === 3).length);
+    assert.ok(Math.max(...hardPerArea) - Math.min(...hardPerArea) <= 1, `hard per area ${hardPerArea}`);
+    for (const c of CLUSTERS) assert.equal(bp.filter(q => c.domains.includes(q.d) && q.k === "cat").length, 1, `${c.id} CAT`);
+    const ordered = orderBaselinePaper(bp.map(b => ({ ...bankRowFor(b), _b: b })), makeRng(seed)).map(r => r._b);
+    assert.ok(ordered.slice(-4).every(q => q.k === "cat"), "CAT-level questions come last");
+    assert.ok(ordered.slice(0, want[1]).every(q => q.lv === 1), "easy questions come first");
   }
-  const m = paperMix(6);
-  assert.deepEqual([m[1], m[2], m[3]], [8, 12, 28]);
-  assert.ok(Math.abs(m[3] / 48 - 0.6) < 0.03 && Math.abs(m[2] / 48 - 0.25) < 0.01 && Math.abs(m[1] / 48 - 0.15) < 0.03);
-  const m4 = paperMix(4);
-  assert.deepEqual([m4[1], m4[2], m4[3]], [4, 8, 20]);
+});
+
+test("balanced papers never include CAT-level items", () => {
+  for (let seed = 1; seed <= 20; seed++) for (const per of PAPER_SIZES) assert.ok(!buildBlueprint(per, makeRng(seed), "balanced").some(q => q.k === "cat"));
 });
 
 test("the hard pool in every domain can fill several different challenging papers", () => {
   for (const d of DOMAINS) {
-    const hard = QAAPF_QUESTIONS.filter(q => q.d === d.id && q.lv === 3).length;
-    assert.ok(hard >= 15, `${d.id} has only ${hard} hard items`);
+    const hard = QAAPF_QUESTIONS.filter(q => q.d === d.id && q.lv === 3 && q.k !== "cat").length;
+    const cat = QAAPF_QUESTIONS.filter(q => q.d === d.id && q.k === "cat").length;
+    assert.ok(hard >= 12, `${d.id} has only ${hard} hard items`);
+    assert.ok(cat >= 4, `${d.id} has only ${cat} CAT-level items`);
   }
 });
 
@@ -269,6 +277,22 @@ test("every reasoning item and every v4.1 item has an explanation", () => {
   const f = QAAPF_QUESTIONS.find(q => q.id === "F084") || QAAPF_QUESTIONS.find(q => q.d === "F" && q.x);
   assert.equal(explanationFor(f.q), f.x);
   assert.equal(explanationFor("Teacher's own question"), null);
+});
+
+test("new papers take questions not used on earlier papers first, keeping the spread", () => {
+  const first = buildBlueprint(6, makeRng(101));
+  const exposed = new Set(first.map(b => b.id));
+  const second = buildBlueprint(6, makeRng(202), DEFAULT_MIX, exposed);
+  const repeats = second.filter(b => exposed.has(b.id)).length;
+  assert.ok(repeats <= 6, `${repeats} repeats on the second paper`);
+  const control = buildBlueprint(6, makeRng(202));
+  assert.ok(repeats < control.filter(b => exposed.has(b.id)).length || repeats === 0, "exposure control lowers repeats");
+  for (const d of DOMAINS) {
+    const k = {}; for (const q of second.filter(x => x.d === d.id)) k[q.u] = (k[q.u] || 0) + 1;
+    assert.ok(Math.max(...Object.values(k)) <= 2, `${d.id} spread`);
+  }
+  const want = paperMix(6);
+  for (const lv of [1, 2, 3]) assert.equal(second.filter(q => q.lv === lv).length, want[lv]);
 });
 
 test("blueprint spreads each domain across its sub-skills", () => {

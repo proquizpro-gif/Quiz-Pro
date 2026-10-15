@@ -2404,7 +2404,7 @@ function Rules({ quiz, questions, attempts, name, userId, onStart, starting = fa
   const isBaseline = isBaselineQuiz(quiz);
   const rules = isBaseline
     ? [
-        [ListChecks, `${quiz.draw_count} questions on numbers, commercial arithmetic, patterns, algebra, data, reasoning and problem solving. They start easier and get harder.`],
+        [ListChecks, `${quiz.draw_count} questions on numbers, commercial arithmetic, patterns, algebra, data, reasoning and problem solving. They start easier and get harder, and the last few are the hardest — very few people finish them, so don't worry if you can't.`],
         [CheckCircle2, "There is no negative marking. An unanswered question scores the same as a wrong one, so if time is running out, answer the rest rather than leave them blank."],
         [BookOpen, "Use rough paper for working. Calculators and phones are not allowed; none of the questions needs one."],
         [Clock, `A race against the clock: ${Math.round(quiz.duration_sec/60)} minutes for ${quiz.draw_count} questions — about ${Math.round(quiz.duration_sec / Math.max(1, quiz.draw_count))} seconds each. If a question takes more than a minute, mark it for review and move on; come back if time allows. A pace marker shows whether you are ahead or behind. Auto-submits when time runs out.`],

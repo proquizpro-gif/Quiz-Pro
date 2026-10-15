@@ -22,7 +22,7 @@ import {
   QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE,
   Q_LEVELS, DOMAINS, CLUSTERS, CLUSTER_RELIABLE_MIN, RAPID_SECONDS, diffLabel,
   computeQAAPFProfile, selectProfileAttempts, isBaselineQuiz, BASELINE_TITLE_PREFIX,
-  PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, MIXES, DEFAULT_MIX, clusterMix, paperMix, formCode, suggestedMinutes, minutesForItems,
+  PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, MIXES, DEFAULT_MIX, clusterMix, paperMix, exposedItemIds, formCode, suggestedMinutes, minutesForItems,
   paceOf, TIME_PRESETS, RACE_SECONDS_PER_QUESTION,
   bankRowFor, isRowVerified, planBankRepairs, verifiedItemFor, norm,
 } from "../lib/qaapf-core.js";
@@ -143,6 +143,9 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
   const whole = paperMix(perDomain, mixId);
   const pct = n => Math.round((n / whole.total) * 100);
   const pace = paceOf(totalQ, minutes);
+  /* Questions already used on this institution's earlier baseline papers.
+     New papers take unseen questions first. */
+  const exposed = useMemo(() => exposedItemIds(forms, questions), [forms, questions]);
 
   /* Make sure each bank item on the paper exists in the question bank in
      its verified form. Reuse a verified row; repair a stale copy; add a
@@ -202,7 +205,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
           if (b) items.push(b); else if (row) extraIds.push(id);
         }
       } else {
-        items = buildBlueprint(perDomain, Math.random, mixId);
+        items = buildBlueprint(perDomain, Math.random, mixId, exposed);
       }
 
       const { ids, repaired, added } = await ensureVerifiedRows(items);
@@ -228,7 +231,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
         created_by: user.id,
       });
       setQuizzes(prev => [...prev, quiz]);
-      setCreated({ quiz, link: `${window.location.origin}?quiz=${quiz.id}`, code, repaired, added });
+      setCreated({ quiz, link: `${window.location.origin}?quiz=${quiz.id}`, code, repaired, added, fresh: template ? null : items.filter(b => !exposed.has(b.id)).length });
       onDone(`Baseline created — ${questionIds.length} questions · Form ${code}.`);
     } catch (e) {
       onDone(e.message || "Could not create the baseline test.", "rose");
@@ -271,6 +274,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"><div className="text-[10px] font-bold uppercase text-slate-400">Form</div><div className={`${num} text-sm font-bold text-slate-900`}>{created.code}</div></div>
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"><div className="text-[10px] font-bold uppercase text-slate-400">Bank copies repaired</div><div className={`${num} text-sm font-bold text-slate-900`}>{created.repaired}</div></div>
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"><div className="text-[10px] font-bold uppercase text-slate-400">Questions added to bank</div><div className={`${num} text-sm font-bold text-slate-900`}>{created.added}</div></div>
+          {created.fresh !== null && created.fresh !== undefined && <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 sm:col-span-3"><div className="text-[10px] font-bold uppercase text-slate-400">Not on any earlier paper</div><div className={`${num} text-sm font-bold text-slate-900`}>{created.fresh} of {created.quiz.question_ids.length}</div></div>}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -328,7 +332,7 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
                 return <option key={n} value={n}>{n * DOMAINS.length} questions · {suggestedMinutes(n, mixId)} min · {pc.perMinute} a minute · {m[1]} easy / {m[2]} medium / {m[3]} hard ({label})</option>;
               })}
             </select>
-            <p className="mt-1 text-[10px] text-slate-400">A shorter paper widens each score's likely range: about ±17 points at 50% on 32 questions, ±14 on 48.</p>
+            <p className="mt-1 text-[10px] text-slate-400">A shorter paper widens each score's likely range: about ±17 points at 50% on 32 questions, ±15 on 40, ±14 on 48.</p>
           </div>
           <div className="sm:col-span-2">
             <label className="mb-1 block text-xs font-semibold text-slate-500">Difficulty</label>
@@ -356,14 +360,21 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
               ))}
               <input type="number" min={10} max={240} aria-label="Minutes" className={`${inp} ${num} !w-20 !py-1.5`} value={minutes} onChange={e => setMinutesEdited(Math.max(10, Number(e.target.value) || 10))} />
             </div>
-            <p className={`mt-1 text-[10px] ${pace.race && !pace.tight ? "text-slate-500" : "text-amber-700"}`}>
-              {pace.secPerQuestion} s a question · {pace.perMinute} questions a minute.{" "}
-              {!pace.race
-                ? "Slower than one question a minute — this is not a race."
-                : pace.tight
-                ? "Very fast: many students will not reach the hard questions at the end, so their difficulty profile rests on fewer questions."
-                : `Suggested ${suggested} min (easy 40 s, medium 50 s, hard 60 s a question).`}
-            </p>
+            {(() => {
+              /* Judged against the time this paper's difficulty needs, not a
+                 fixed one-a-minute rule: hard questions take longer. */
+              const tight = minutes < suggested - 5, roomy = minutes > suggested + 5;
+              return (
+                <p className={`mt-1 text-[10px] ${tight || roomy ? "text-amber-700" : "text-slate-500"}`}>
+                  {pace.secPerQuestion} s a question · {pace.perMinute} questions a minute.{" "}
+                  {tight
+                    ? `Much less than the ${suggested} min this paper needs: many students will not reach the hard questions, so their difficulty profile rests on fewer of them.`
+                    : roomy
+                    ? `More than the ${suggested} min this paper needs — speed will tell you little.`
+                    : `Suggested ${suggested} min (easy 40 s, medium 55 s, hard 75 s, CAT-level 100 s a question).`}
+                </p>
+              );
+            })()}
           </div>
         </div>
 
@@ -381,11 +392,12 @@ function BaselineGenerator({ questions, setQuestions, quizzes, setQuizzes, class
             <p className="text-xs text-slate-600">The same {template.question_ids.length} questions as <strong>{template.title}</strong>. Built-in questions are re-checked against the verified bank first.</p>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
-              <p className="sm:col-span-2 text-xs text-slate-600">{whole[1]} easy ({pct(whole[1])}%) · {whole[2]} medium ({pct(whole[2])}%) · {whole[3]} hard ({pct(whole[3])}%), in that order on the paper.</p>
+              <p className="sm:col-span-2 text-xs text-slate-600">{whole[1]} easy ({pct(whole[1])}%) · {whole[2]} medium ({pct(whole[2])}%) · {whole[3]} hard ({pct(whole[3])}%), in that order on the paper{whole.cat ? <>, ending with {whole.cat} CAT/XAT-level questions</> : null}.
+                {exposed.size > 0 && <> Questions not used on your {forms.length} earlier baseline paper{forms.length === 1 ? "" : "s"} are chosen first.</>}</p>
               {CLUSTERS.map(c => (
                 <div key={c.id} className="rounded-lg border border-slate-100 bg-white p-2">
                   <div className="mb-1 flex items-center justify-between text-[11px] font-bold text-slate-700">
-                    <span>{c.icon} {c.name}</span><span className={`${num} text-slate-400`}>{perDomain * c.domains.length} Q · {areaMix[1]}E {areaMix[2]}M {areaMix[3]}H</span>
+                    <span>{c.icon} {c.name}</span><span className={`${num} text-slate-400`}>{perDomain * c.domains.length} Q · {areaMix[3]} hard{whole.cat ? " incl. 1 CAT-level" : ""}</span>
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {c.domains.map(id => {
@@ -986,6 +998,7 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
                     <Badge tone="slate">{q.id}</Badge>
                     <Badge tone="sky">{q.u}</Badge>
                     <Badge tone={diffTone(q.lv)}>{diffLabel(q.lv)}</Badge>
+                    {q.k === "cat" && <Badge tone="violet">CAT-level</Badge>}
                     {inBank && <Badge tone="emerald">In bank</Badge>}
                   </div>
                   <p className="text-xs font-medium text-slate-800">{q.q}</p>
