@@ -19,7 +19,7 @@ import { useAuth } from "../lib/AuthContext.jsx";
 import QAAPFEvidence from "./QAAPFEvidence.jsx";
 import QAAPF2 from "./QAAPF2.jsx";
 import {
-  QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE,
+  QAAPF_ACTIVE, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE,
   Q_LEVELS, DOMAINS, CLUSTERS, CLUSTER_RELIABLE_MIN, RAPID_SECONDS, diffLabel,
   computeQAAPFProfile, selectProfileAttempts, isBaselineQuiz, BASELINE_TITLE_PREFIX,
   PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, MIXES, DEFAULT_MIX, clusterMix, paperMix, exposedItemIds, formCode, suggestedMinutes, minutesForItems,
@@ -73,7 +73,7 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
               <h2 className="flex items-center gap-2 text-lg font-extrabold text-white"><Brain size={20} /> QAAPF</h2>
               <p className="mt-0.5 text-sm text-violet-200">Quantitative &amp; Analytical Aptitude Proficiency Framework</p>
               <p className="mt-1 text-[11px] text-violet-300">
-                8 domains in 4 reporting areas · 6 proficiency bands · {QAAPF_QUESTIONS.length} verified questions · bank v{QAAPF_BANK_VERSION}
+                8 domains in 4 reporting areas · 6 proficiency bands · {QAAPF_ACTIVE.length} verified questions · bank v{QAAPF_BANK_VERSION}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -897,16 +897,16 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
   const [working, setWorking] = useState(false);
 
   const bankedTexts = useMemo(() => new Set(questions.map(q => norm(q.question))), [questions]);
-  const notBanked = useMemo(() => QAAPF_QUESTIONS.filter(q => !bankedTexts.has(norm(q.q))), [bankedTexts]);
-  const banked = QAAPF_QUESTIONS.length - notBanked.length;
+  const notBanked = useMemo(() => QAAPF_ACTIVE.filter(q => !bankedTexts.has(norm(q.q))), [bankedTexts]);
+  const banked = QAAPF_ACTIVE.length - notBanked.length;
   const plan = useMemo(() => planBankRepairs(questions), [questions]);
 
-  const filtered = filter === "all" ? QAAPF_QUESTIONS : filter === "new" ? notBanked : QAAPF_QUESTIONS.filter(q => q.d === filter);
+  const filtered = filter === "all" ? QAAPF_ACTIVE : filter === "new" ? notBanked : QAAPF_ACTIVE.filter(q => q.d === filter);
 
   const domainCounts = DOMAINS.map(d => ({
     ...d,
-    total: QAAPF_QUESTIONS.filter(q => q.d === d.id).length,
-    added: QAAPF_QUESTIONS.filter(q => q.d === d.id && bankedTexts.has(norm(q.q))).length,
+    total: QAAPF_ACTIVE.filter(q => q.d === d.id).length,
+    added: QAAPF_ACTIVE.filter(q => q.d === d.id && bankedTexts.has(norm(q.q))).length,
   }));
 
   const importItems = async (items, label) => {
@@ -941,7 +941,7 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-slate-900">Question inventory · bank v{QAAPF_BANK_VERSION}</h3>
-            <p className="mt-0.5 text-xs text-slate-500">{banked} of {QAAPF_QUESTIONS.length} built-in questions are in your bank. Built-in questions are always scored against the verified key, whatever the bank copy says.</p>
+            <p className="mt-0.5 text-xs text-slate-500">{banked} of {QAAPF_ACTIVE.length} built-in questions are in your bank. Built-in questions are always scored against the verified key, whatever the bank copy says.</p>
           </div>
           <button onClick={() => importItems(notBanked, "to the question bank")} disabled={working || !notBanked.length} className={`${btnP} gap-2`}>
             <Plus size={14} />{working ? "Working…" : `Import all ${notBanked.length} new`}
@@ -973,7 +973,7 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
                 <div className="mt-0.5 text-[10px] text-slate-400">{d.added}/{d.total} added</div>
               </div>
               {d.added < d.total
-                ? <button onClick={() => importItems(QAAPF_QUESTIONS.filter(q => q.d === d.id && !bankedTexts.has(norm(q.q))), `from Domain ${d.id}`)} disabled={working} className="shrink-0 rounded-xl bg-violet-50 p-1.5 text-violet-600 transition hover:bg-violet-100" title={`Import Domain ${d.id}`}><Plus size={14} /></button>
+                ? <button onClick={() => importItems(QAAPF_ACTIVE.filter(q => q.d === d.id && !bankedTexts.has(norm(q.q))), `from Domain ${d.id}`)} disabled={working} className="shrink-0 rounded-xl bg-violet-50 p-1.5 text-violet-600 transition hover:bg-violet-100" title={`Import Domain ${d.id}`}><Plus size={14} /></button>
                 : <CheckCircle2 size={16} className="shrink-0 text-emerald-500" />}
             </div>
           ))}
@@ -982,7 +982,7 @@ function QuestionInventory({ questions, setQuestions, toast2 }) {
 
       <div className={`${card} overflow-hidden`}>
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-4">
-          <button onClick={() => setFilter("all")} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${filter === "all" ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-600"}`}>All ({QAAPF_QUESTIONS.length})</button>
+          <button onClick={() => setFilter("all")} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${filter === "all" ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-600"}`}>All ({QAAPF_ACTIVE.length})</button>
           <button onClick={() => setFilter("new")} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${filter === "new" ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-600"}`}>Not imported ({notBanked.length})</button>
           {DOMAINS.map(d => <button key={d.id} onClick={() => setFilter(d.id)} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${filter === d.id ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-600"}`}>{d.icon} {d.id}</button>)}
         </div>

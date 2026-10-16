@@ -259,13 +259,35 @@ test("balanced papers never include CAT-level items", () => {
   for (let seed = 1; seed <= 20; seed++) for (const per of PAPER_SIZES) assert.ok(!buildBlueprint(per, makeRng(seed), "balanced").some(q => q.k === "cat"));
 });
 
-test("the hard pool in every domain can fill several different challenging papers", () => {
+test("the active bank is balanced: about a third easy, a third medium, a third hard + CAT, in every domain", () => {
   for (const d of DOMAINS) {
-    const hard = QAAPF_QUESTIONS.filter(q => q.d === d.id && q.lv === 3 && q.k !== "cat").length;
-    const cat = QAAPF_QUESTIONS.filter(q => q.d === d.id && q.k === "cat").length;
-    assert.ok(hard >= 12, `${d.id} has only ${hard} hard items`);
-    assert.ok(cat >= 4, `${d.id} has only ${cat} CAT-level items`);
+    const A = QAAPF_QUESTIONS.filter(q => q.d === d.id && !q.r);
+    const easy = A.filter(q => q.lv === 1).length, hard = A.filter(q => q.lv === 3 && q.k !== "cat").length, cat = A.filter(q => q.k === "cat").length;
+    assert.ok(hard >= 20, `${d.id} has only ${hard} hard items`);
+    assert.ok(cat >= 8, `${d.id} has only ${cat} CAT-level items`);
+    assert.ok(easy / A.length <= 0.35, `${d.id} is ${Math.round(easy / A.length * 100)}% easy`);
+    assert.ok((hard + cat) / A.length >= 0.3, `${d.id} is only ${Math.round((hard + cat) / A.length * 100)}% hard`);
   }
+});
+
+test("retired items never go on a new paper, but answers to them still score", () => {
+  for (let seed = 1; seed <= 150; seed++) for (const per of PAPER_SIZES) for (const mix of ["challenging", "balanced"])
+    assert.ok(!buildBlueprint(per, makeRng(seed), mix).some(q => q.r), `seed ${seed} ${per} ${mix}`);
+  const old = QAAPF_QUESTIONS.filter(q => q.r);
+  assert.ok(old.length > 0);
+  for (const q of old) {
+    const r = resolveItem({ question: q.q, options: q.o, correct: q.c }, null);
+    assert.equal(r.key, q.c, q.id); assert.equal(r.meta.id, q.id);
+  }
+});
+
+test("six successive 40-question papers share no hard or CAT-level question", () => {
+  const used = new Set(); let repeats = 0;
+  for (let k = 0; k < 6; k++) {
+    const paper = buildBlueprint(DEFAULT_PER_DOMAIN, makeRng(100 + k), "challenging", used);
+    for (const q of paper) { if (q.lv === 3 && used.has(q.id)) repeats++; used.add(q.id); }
+  }
+  assert.equal(repeats, 0);
 });
 
 test("every reasoning item and every v4.1 item has an explanation", () => {

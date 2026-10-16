@@ -25,6 +25,9 @@
 import { QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE } from "./qaapf-bank.js";
 
 export { QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE };
+/* Items that can go on a new paper or be imported. Retired items (r: 1)
+   stay in QAAPF_QUESTIONS so attempts that used them still score. */
+export const QAAPF_ACTIVE = QAAPF_QUESTIONS.filter(q => !q.r);
 
 /* ── Proficiency bands ───────────────────────────────────────────────
    Cut-points are unchanged from v3 so earlier classifications stay
@@ -868,7 +871,7 @@ export function shuffleWith(arr, rng = Math.random) {
    control) — students who sat, or heard about, an earlier paper do not
    meet the same questions again. */
 export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null, exposed = null) {
-  const pool = QAAPF_QUESTIONS.filter(q => q.d === domId);
+  const pool = QAAPF_ACTIVE.filter(q => q.d === domId);
   const mix = mixCounts || difficultyMix(n);
   const unitUse = new Map();
   const seen = q => (exposed && exposed.has(q.id) ? 1 : 0);

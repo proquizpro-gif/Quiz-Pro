@@ -35,6 +35,9 @@ for (const q of Q) {
   }
   if (!Number.isInteger(q.c) || q.c < 0 || q.c > 3) bad(id, "key index out of range");
   if (![1, 2, 3].includes(q.lv)) bad(id, "difficulty must be 1, 2 or 3");
+  if (q.r !== undefined && q.r !== 1) bad(id, "r (retired) must be 1 when present");
+  if (q.r && q.lv !== 1) bad(id, "only easy items are retired");
+  if (q.k !== undefined && (q.k !== "cat" || q.lv !== 3)) bad(id, "k must be \"cat\" on a level-3 item");
 
   // Faults seen in v3: items that lean on another item, leaked hints, raw markup.
   if (/\bsame (table|data|output|chart|graph)\b|\bin the same\b(?! code)|\babove (table|data)\b/i.test(q.q)) bad(id, "refers to another question");
@@ -52,10 +55,10 @@ if (share.some(s => s < 0.2 || s > 0.3)) problems.push(`answer key positions unb
 const maxMix = difficultyMix(Math.max(...PAPER_SIZES));
 for (const d of DOMAINS) {
   for (const lv of [1, 2, 3]) {
-    const n = Q.filter(q => q.d === d.id && q.lv === lv).length;
+    const n = Q.filter(q => !q.r && q.d === d.id && q.lv === lv).length;
     if (n < maxMix[lv] * 3) problems.push(`domain ${d.id}: only ${n} level-${lv} items (want at least ${maxMix[lv] * 3} for rotation)`);
   }
-  for (const u of d.units) if (!Q.some(q => q.d === d.id && q.u === u)) problems.push(`domain ${d.id}: unit "${u}" has no items`);
+  for (const u of d.units) if (!Q.some(q => !q.r && q.d === d.id && q.u === u)) problems.push(`domain ${d.id}: unit "${u}" has no items`);
 }
 
 // Earlier versions must point at a real successor and carry an answer when sound.
@@ -72,7 +75,10 @@ if (problems.length) {
 }
 console.log(`QAAPF bank v${QAAPF_BANK_VERSION}: ${Q.length} items, ${L.length} earlier versions — all checks passed.`);
 console.log(`  keys A–D: ${pos.join(" / ")}`);
+const active = Q.filter(q => !q.r);
+console.log(`  in use: ${active.length} (${Q.length - active.length} retired, kept for scoring old attempts)`);
 for (const d of DOMAINS) {
-  const c = [1, 2, 3].map(lv => Q.filter(q => q.d === d.id && q.lv === lv).length);
-  console.log(`  ${d.id} ${d.name.padEnd(32)} easy ${String(c[0]).padStart(2)} · medium ${String(c[1]).padStart(2)} · hard ${String(c[2]).padStart(2)}`);
+  const A = active.filter(q => q.d === d.id);
+  const c = [1, 2, 3].map(lv => A.filter(q => q.lv === lv && q.k !== "cat").length), cat = A.filter(q => q.k === "cat").length;
+  console.log(`  ${d.id} ${d.name.padEnd(32)} easy ${String(c[0]).padStart(2)} · medium ${String(c[1]).padStart(2)} · hard ${String(c[2]).padStart(2)} · CAT ${String(cat).padStart(2)}`);
 }

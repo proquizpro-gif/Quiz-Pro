@@ -125,3 +125,37 @@ Scores will be noticeably lower than on earlier papers, and that is intended. Do
 1. Upload the package as before.
 2. Go to QAAPF → Question bank and click **Repair**, which updates levels on copies already in your database.
 3. Create a **new** baseline paper. Papers you created earlier keep their old questions.
+
+---
+
+# v4.5 — full question-bank audit (bank 4.4)
+
+Problem reported: the bank as a whole held far more easy questions than medium or hard ones, and the labels did not show it.
+
+## Findings
+
+Each of the 786 questions was re-rated against one written rubric (see the `lv` notes at the top of `qaapf-bank.js`).
+
+| | Easy | Medium | Hard | CAT-level |
+|---|---|---|---|---|
+| As labelled (v4.4) | 121 (15%) | 522 (66%) | 111 (14%) | 32 (4%) |
+| Re-rated honestly | 474 (60%) | 249 (32%) | 31 (4%) | 32 (4%) |
+| Now, questions in use | 237 (31%) | 273 (36%) | 192 (25%) | 64 (8%) |
+
+## Changes
+
+- **433 labels corrected.** 353 questions moved from medium to easy and 80 from hard to medium. No answer key changed.
+- **237 easy questions retired** (`r: 1`). These were below placement level or near-duplicates. They are never put on new papers and are hidden from the bank screen, but attempts that used them still score.
+- **217 new questions:** 24 medium, 161 hard and 32 CAT-level. Each answer is recomputed by code, and each puzzle was brute-forced to confirm a single solution.
+- **Every domain now has 24 hard and 8 CAT-level questions.** New tests check:
+  - the balance in every domain;
+  - that retired questions never appear on a paper;
+  - that 6 successive papers share no hard question.
+
+## Deploy
+
+1. Upload the package.
+2. Go to QAAPF → Question bank and click **Repair**, which updates the difficulty labels on questions already in your database.
+3. Create a new baseline paper.
+
+The review workbook is `QAAPF-bank-audit-v4.5.xlsx`.
