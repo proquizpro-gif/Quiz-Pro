@@ -164,14 +164,87 @@ export async function deleteQuiz(id) {
   if (error) throw error;
 }
 
+/* ── Answer keys of submitted papers (STEP7) ─────────────────────
+   After STEP7 the attempts table holds no answer keys; they sit in
+   attempt_keys, which staff can always read and a student only once
+   their quiz's answers are released. These helpers put the keys back
+   into each attempt's items for whoever is allowed to see them, so the
+   rest of the app reads item.correct exactly as before. Before STEP7
+   the table does not exist and attempts still carry their keys. */
+let keysTable = null;            // null = unknown, false = no STEP7 table
+const isMissingTable = e => e && (e.code === "42P01" || e.code === "PGRST205" || /attempt_keys|does not exist|could not find the table/i.test(e.message || ""));
+
+async function fetchKeysFor(ids) {
+  if (keysTable === false || !ids.length) return new Map();
+  const out = new Map();
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase.from("attempt_keys").select("attempt_id, keys").in("attempt_id", ids.slice(i, i + 200));
+    if (error) { if (isMissingTable(error)) { keysTable = false; return out; } throw error; }
+    keysTable = true;
+    for (const r of data || []) out.set(r.attempt_id, r.keys);
+  }
+  return out;
+}
+async function fetchAllKeys() {
+  if (keysTable === false) return new Map();
+  try {
+    const rows = await fetchAllRows(() => supabase.from("attempt_keys").select("attempt_id, keys").order("attempt_id", { ascending: true }));
+    keysTable = true;
+    return new Map(rows.map(r => [r.attempt_id, r.keys]));
+  } catch (e) { if (isMissingTable(e)) { keysTable = false; return new Map(); } throw e; }
+}
+export function mergeKeys(attempt, keys) {
+  if (!attempt || !Array.isArray(keys) || !Array.isArray(attempt.items)) return attempt;
+  const items = attempt.items.map((it, i) => {
+    const k = keys[i];
+    if (!k || k.correct === undefined || k.correct === null) return it;
+    if (k.qid !== undefined && k.qid !== null && it.qid !== undefined && String(k.qid) !== String(it.qid)) return it;
+    return { ...it, correct: k.correct };
+  });
+  return { ...attempt, items, keysReleased: true };
+}
+const withKeys = (rows, map) => rows.map(a => map.has(a.id) ? mergeKeys(a, map.get(a.id)) : a);
+
+/* Explanations for a student's own paper, once released (STEP7). An
+   array in item order, or null when not released or not available. */
+export async function fetchAttemptExplanations(attemptId) {
+  const { data, error } = await supabase.rpc("attempt_explanations", { p_attempt_id: attemptId });
+  if (error) return null;
+  return Array.isArray(data) ? data : null;
+}
+
+/* The passphrase for the sealed built-in bank (STEP7). Staff get it;
+   anyone else gets null. { missing: true } before STEP7 is run. */
+export async function fetchBankSecret() {
+  const { data, error } = await supabase.rpc("qaapf_bank_secret");
+  if (error) {
+    const missing = error.code === "PGRST202" || error.code === "42883" || /could not find the function|does not exist/i.test(error.message || "");
+    if (missing) return { missing: true };
+    throw error;
+  }
+  return { secret: data || null };
+}
+
 /* ── Attempts ───────────────────────────────────────────────────── */
 export async function fetchAttempts() {
-  return fetchAllRows(() => supabase.from("attempts").select("*")
-    .order("submitted_at", { ascending: false }).order("id", { ascending: true }));
+  const [rows, keys] = await Promise.all([
+    fetchAllRows(() => supabase.from("attempts").select("*")
+      .order("submitted_at", { ascending: false }).order("id", { ascending: true })),
+    fetchAllKeys(),
+  ]);
+  return withKeys(rows, keys);
 }
 export async function fetchMyAttempts(userId) {
-  return fetchAllRows(() => supabase.from("attempts").select("*").eq("user_id", userId)
+  const rows = await fetchAllRows(() => supabase.from("attempts").select("*").eq("user_id", userId)
     .order("submitted_at", { ascending: false }).order("id", { ascending: true }));
+  return withKeys(rows, await fetchKeysFor(rows.map(r => r.id)));
+}
+/* One attempt's released keys merged in (used after a realtime insert
+   and right after a student submits). */
+export async function attachKeys(attempt) {
+  if (!attempt?.id) return attempt;
+  const map = await fetchKeysFor([attempt.id]);
+  return map.has(attempt.id) ? mergeKeys(attempt, map.get(attempt.id)) : attempt;
 }
 
 /* Attempts submitted recently, for the faculty dashboard's refresh.
@@ -195,7 +268,7 @@ export async function fetchNewAttempts(knownIds, windowHours = 24) {
     if (e2) throw e2;
     rows.push(...(part || []));
   }
-  return rows;
+  return withKeys(rows, await fetchKeysFor(rows.map(r => r.id)));
 }
 
 /* Saving a finished paper must be safe to repeat. When the network
@@ -212,12 +285,13 @@ export async function insertAttempt(attempt, { retry = false } = {}) {
       const { data } = await supabase.from("attempts").select("*")
         .eq("quiz_id", attempt.quiz_id).eq("user_id", attempt.user_id)
         .contains("meta", { client_attempt_id: token }).limit(1);
-      if (data && data.length) return data[0];
+      if (data && data.length) return attachKeys(data[0]).catch(() => data[0]);
     } catch (_) { /* meta column absent — fall through and insert */ }
   }
-  return retryStrip("attempts",
+  const saved = await retryStrip("attempts",
     p => supabase.from("attempts").insert(p).select().single(),
     attempt, ATTEMPT_OPTIONAL);
+  return attachKeys(saved).catch(() => saved);
 }
 export async function deleteAttempt(id) {
   const { error } = await supabase.from("attempts").delete().eq("id", id);

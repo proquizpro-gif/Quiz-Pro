@@ -6,23 +6,25 @@ import {
   LogOut, AlertCircle, RotateCcw,
   PlayCircle, PauseCircle, CalendarClock, FileDown, ShieldAlert,
   School, LogIn, Edit3, Save, GraduationCap,
-  Target, Copy, Printer, Flag, WifiOff, Brain, Radio,
+  Target, Copy, Printer, Flag, WifiOff, Brain, Radio, Lock,
 } from "lucide-react";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { configMissing } from "./lib/supabase";
 import {
   fetchQuestions, insertQuestion, insertQuestions, updateQuestion, deleteQuestion, deleteQuestions,
   fetchQuizzes, insertQuiz, updateQuiz, deleteQuiz,
-  fetchAttempts, fetchMyAttempts, fetchNewAttempts, insertAttempt, fetchQuizPaper,
+  fetchAttempts, fetchMyAttempts, fetchNewAttempts, insertAttempt, fetchQuizPaper, attachKeys, fetchAttemptExplanations,
   fetchMyClassrooms, joinClassroomByCode, leaveClassroomAsStudent,
   logAudit, subscribeToAttempts,
   startLiveSession, touchLiveSession, endLiveSession, fetchMyLiveSession,
 } from "./lib/db";
 import { downloadCSV } from "./lib/csv";
 import { examClock, remainingAt, quizSettingsProblem } from "./lib/exam-logic.js";
+import { itemStatistics, paperReliability, MIN_N } from "./lib/psychometrics.js";
 import { pingKeepAlive } from "./lib/keepalive";
+import { loadBuiltInBank } from "./lib/bank-loader.js";
 import AIAssistant from "./components/AIAssistant";
-import { isBaselineQuiz, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, rekeyAttempts, QAAPF_BANK_VERSION, computeQAAPFProfile, getQLevel, explanationFor, verifiedItemFor } from "./lib/qaapf-core.js";
+import { isBaselineQuiz, baselineQuizIds, orderBaselinePaper, selectProfileAttempts, rekeyAttempt, rekeyAttempts, QAAPF_BANK_VERSION, computeQAAPFProfile, explanationFor, verifiedItemFor } from "./lib/qaapf-core.js";
 import LiveInvigilation from "./components/LiveInvigilation.jsx";
 
 /* Faculty and admin screens load on first use, so a student's phone
@@ -143,6 +145,7 @@ function AppInner() {
   const [classrooms, setClassrooms] = useState([]);
   const [dataReady, setDataReady] = useState(false);
   const [dataError, setDataError] = useState("");
+  const [bankState, setBankState] = useState(null);   // staff: result of unsealing the built-in bank
   const [view, setView] = useState("main"); // 'main' | 'admin'
   const attemptsRef = useRef(attempts);
   attemptsRef.current = attempts;
@@ -158,13 +161,15 @@ function AppInner() {
       // must not blank the entire dashboard. Each dataset fills in on its
       // own; a partial failure surfaces a dismissible notice rather than a
       // dead screen, and the rest of the app stays usable.
-      const [qs, qzs, ats, crs] = await Promise.allSettled([
+      const [qs, qzs, ats, crs, bk] = await Promise.allSettled([
         fetchQuestions(),
         fetchQuizzes(),
         isFaculty ? fetchAttempts() : fetchMyAttempts(userId),
         fetchMyClassrooms(),
+        isFaculty ? loadBuiltInBank() : Promise.resolve(null),
       ]);
       if (cancelled) return;
+      setBankState(bk.status === "fulfilled" ? bk.value : { ok: false, reason: "error", message: bk.reason?.message });
       if (qs.status  === "fulfilled") setQuestions(qs.value);
       if (qzs.status === "fulfilled") setQuizzes(qzs.value);
       if (ats.status === "fulfilled") setAttempts(ats.value);
@@ -192,7 +197,9 @@ function AppInner() {
       return fresh.length ? [...fresh, ...prev] : prev;
     });
 
-    const unsubscribe = subscribeToAttempts((newAttempt) => {
+    const unsubscribe = subscribeToAttempts(async (raw) => {
+      /* After STEP7 a new attempt arrives without its keys; fetch them. */
+      const newAttempt = await attachKeys(raw).catch(() => raw);
       setAttempts(prev => prev.some(a => a.id === newAttempt.id) ? prev : [newAttempt, ...prev]);
     });
 
@@ -248,6 +255,7 @@ function AppInner() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+        {isFaculty && bankState && !bankState.ok && <BankLockedNotice state={bankState}/>}
         {dataError && <div className="mb-6 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertCircle size={16} className="shrink-0"/><span className="flex-1">Some data could not be loaded ({dataError}). The rest of the app is usable — reload to try again.</span><button onClick={() => setDataError("")} className="shrink-0 text-amber-400 hover:text-amber-700"><XCircle size={16}/></button></div>}
 
         {view === "admin" && isAdmin
@@ -265,6 +273,23 @@ function AppInner() {
           it out while a quiz is being written — it used to float above
           the exam, a chatbot available mid-test. */}
       {isFaculty && <AIAssistant role="faculty"/>}
+    </div>
+  );
+}
+
+/* The built-in QAAPF bank is sealed; staff unlock it with the
+   passphrase STEP7 stores in the database. Without it the QAAPF screens
+   cannot generate papers or show the verified key. */
+function BankLockedNotice({ state }) {
+  const why = state.reason === "step7"
+    ? <>Run <b>STEP7_exam_confidentiality.sql</b> (in this release) in the Supabase SQL Editor, then reload. It lets staff unlock the built-in question bank, which is now published encrypted so students cannot read its answers.</>
+    : state.reason === "denied"
+      ? <>Your account is not marked as faculty or admin in the database, so the bank stays locked.</>
+      : <>The built-in question bank could not be unlocked: {state.message || "unknown error"}. Reload to try again.</>;
+  return (
+    <div className="mb-6 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800" role="alert">
+      <Lock size={16} className="mt-0.5 shrink-0"/>
+      <div><p className="font-semibold">Built-in QAAPF questions are locked</p><p className="mt-0.5">{why}</p></div>
     </div>
   );
 }
@@ -304,8 +329,15 @@ function Faculty({ questions, setQuestions, quizzes, setQuizzes, attempts, setAt
 }
 
 /* ── Faculty Overview ─────────────────────────────────────────────── */
+/* Baseline papers are diagnostics, sat once and deliberately hard; they
+   stay out of averages and rankings, which are for regular quizzes. */
+function gradedOnly(attempts, quizzes) {
+  const base = baselineQuizIds(quizzes);
+  return (attempts || []).filter(a => !base.has(a.quiz_id));
+}
+
 function FacultyOverview({ questions, quizzes, attempts, classrooms, onOpenQuiz, onGoto }) {
-  const board = useMemo(() => buildLeaderboard(attempts), [attempts]);
+  const board = useMemo(() => buildLeaderboard(gradedOnly(attempts, quizzes)), [attempts, quizzes]);
 
   /* Per-quiz rollups, most recent first. This is what a teacher opens
      the dashboard to see: which quiz just ran, how it went, and whether
@@ -1504,64 +1536,30 @@ function CreateQuiz({ questions, quizzes, setQuizzes, classrooms, onDone }) {
      key or an ambiguous stem. That is the single most valuable
      signal this screen produces.
    ────────────────────────────────────────────────────────────────── */
-function computeItemAnalysis(attempts) {
-  const withItems = attempts.filter(a => Array.isArray(a.items) && a.items.length);
-  if (withItems.length < 1) return [];
-
-  const ranked = [...withItems].sort((a, b) => b.percent - a.percent);
-  const groupSize = Math.max(1, Math.round(ranked.length * 0.27));
-  const topIds = new Set(ranked.slice(0, groupSize).map(a => a.id));
-  const botIds = new Set(ranked.slice(-groupSize).map(a => a.id));
-
-  const byQ = new Map();
-  for (const att of withItems) {
-    for (const it of att.items) {
-      const key = it.qid || it.question;
-      if (!key) continue;
-      if (!byQ.has(key)) {
-        byQ.set(key, {
-          key, question: it.question, options: it.options || [], correct: it.correct,
-          seen: 0, right: 0, skipped: 0,
-          picks: new Array((it.options || []).length).fill(0),
-          topSeen: 0, topRight: 0, botSeen: 0, botRight: 0,
-        });
-      }
-      const r = byQ.get(key);
-      r.seen++;
-      const ok = it.chosen === it.correct;
-      if (ok) r.right++;
-      if (it.chosen === null || it.chosen === undefined) r.skipped++;
-      else if (r.picks[it.chosen] !== undefined) r.picks[it.chosen]++;
-      if (topIds.has(att.id)) { r.topSeen++; if (ok) r.topRight++; }
-      if (botIds.has(att.id)) { r.botSeen++; if (ok) r.botRight++; }
-    }
-  }
-
-  return [...byQ.values()].map(r => {
-    const p = r.seen ? r.right / r.seen : 0;
-    const topRate = r.topSeen ? r.topRight / r.topSeen : 0;
-    const botRate = r.botSeen ? r.botRight / r.botSeen : 0;
-    const d = topRate - botRate;
-    let verdict = "good", note = "Healthy item.";
-    if (d < 0)          { verdict = "inverted"; note = "Top scorers got this WRONG more than weak ones — check the answer key."; }
-    else if (p >= 0.95) { verdict = "tooEasy";  note = "Nearly everyone got it. Adds little information."; }
-    else if (p <= 0.20) { verdict = "tooHard";  note = "Almost nobody got it. Reteach the topic, or the stem may be unclear."; }
-    else if (d < 0.15)  { verdict = "weak";     note = "Barely separates strong from weak students."; }
-    return { ...r, p, d, topRate, botRate, verdict, note };
-  }).sort((a, b) => a.p - b.p);
+function computeItemAnalysis(attempts, questions = []) {
+  const byId = new Map((questions || []).map(q => [q.id, q]));
+  const levelOf = it => {
+    const b = verifiedItemFor(it.question);
+    if (b) return b.lv;
+    const row = it.qid !== undefined && it.qid !== null ? byId.get(it.qid) : null;
+    return row ? ({ easy: 1, medium: 2, hard: 3 }[String(row.difficulty || "").toLowerCase()] || null) : null;
+  };
+  return itemStatistics(attempts, levelOf).items;
 }
 
-function ItemAnalysis({ attempts }) {
-  const rows = useMemo(() => computeItemAnalysis(attempts), [attempts]);
+function ItemAnalysis({ attempts, questions }) {
+  const rows = useMemo(() => computeItemAnalysis(attempts, questions), [attempts, questions]);
+  const rel = useMemo(() => paperReliability(attempts), [attempts]);
   const [open, setOpen]   = useState(false);
   const [only, setOnly]   = useState("problems");
 
   if (!rows.length) return null;
 
-  const problems = rows.filter(r => r.verdict !== "good");
+  const problems = rows.filter(r => (r.verdict !== "good" && r.verdict !== "few") || r.labelCheck);
+  const few = rows.filter(r => r.verdict === "few").length;
   const shown = only === "problems" ? problems : rows;
-  const tone = v => v === "inverted" ? "rose" : v === "tooHard" ? "amber" : v === "tooEasy" ? "sky" : v === "weak" ? "slate" : "emerald";
-  const label = v => v === "inverted" ? "Check key" : v === "tooHard" ? "Too hard" : v === "tooEasy" ? "Too easy" : v === "weak" ? "Weak" : "Good";
+  const tone = v => v === "inverted" ? "rose" : v === "tooHard" ? "amber" : v === "tooEasy" ? "sky" : v === "weak" ? "slate" : v === "few" ? "slate" : "emerald";
+  const label = v => v === "inverted" ? "Check key" : v === "tooHard" ? "Too hard" : v === "tooEasy" ? "Too easy" : v === "weak" ? "Weak" : v === "few" ? "Too few answers" : "Good";
   const inverted = rows.filter(r => r.verdict === "inverted").length;
 
   const exportItems = () => downloadCSV("item-analysis.csv", rows, [
@@ -1571,6 +1569,9 @@ function ItemAnalysis({ attempts }) {
     { label: "Skipped",           key: "skipped" },
     { label: "Difficulty (p)",    value: r => r.p.toFixed(2) },
     { label: "Discrimination (D)",value: r => r.d.toFixed(2) },
+    { label: "Point-biserial (r)",value: r => r.rpb === null ? "" : r.rpb.toFixed(2) },
+    { label: "Labelled level",    value: r => r.level ? ["", "Easy", "Medium", "Hard"][r.level] : "" },
+    { label: "Level check",       value: r => r.labelCheck?.text || "" },
     { label: "Verdict",           value: r => label(r.verdict) },
     { label: "Correct answer",    value: r => r.options[r.correct] ?? "" },
   ]);
@@ -1584,7 +1585,8 @@ function ItemAnalysis({ attempts }) {
             {inverted > 0 && <Badge tone="rose">{inverted} need{inverted===1?"s":""} review</Badge>}
           </h4>
           <p className="mt-0.5 text-xs text-slate-400">
-            {problems.length ? `${problems.length} of ${rows.length} questions flagged` : `All ${rows.length} questions look healthy`}
+            {problems.length ? `${problems.length} of ${rows.length} questions flagged` : few === rows.length ? `${rows.length} questions — too few answers yet to judge` : `All ${rows.length} questions look healthy`}
+            {rel.ok ? ` · reliability ${rel.r.toFixed(2)}, ±${rel.sem.toFixed(1)} marks` : ""}
           </p>
         </div>
         <ChevronLeft size={16} className={`shrink-0 text-slate-400 transition-transform ${open ? "-rotate-90" : "rotate-180"}`}/>
@@ -1599,6 +1601,14 @@ function ItemAnalysis({ attempts }) {
             </div>
             <button onClick={exportItems} className={`${btnG} !py-1.5 !px-3 !text-xs`}><FileDown size={12}/> Export</button>
           </div>
+
+          <div className={`rounded-xl border px-4 py-3 text-xs leading-relaxed ${rel.ok ? (rel.r >= 0.7 ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800") : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+            {rel.ok ? <>
+              <span className="font-bold">Paper reliability (KR-20): <span className={num}>{rel.r.toFixed(2)}</span></span> on {rel.k} questions and {rel.n} students. {rel.verdict}.
+              {" "}A student's score could move by about <span className={`${num} font-semibold`}>±{rel.sem.toFixed(1)}</span> marks ({Math.round(rel.sem / rel.k * 100)} percentage points) on a retest by chance alone.
+            </> : <>Paper reliability: {rel.reason}</>}
+          </div>
+          {few > 0 && <p className="text-[11px] text-slate-400">{few} question{few === 1 ? " has" : "s have"} fewer than {MIN_N} answers; {few === 1 ? "it gets" : "they get"} a verdict once more students have sat the paper.</p>}
 
           {!shown.length && <Empty icon={CheckCircle2} title="No problem questions" hint="Every item is discriminating well. Nothing to fix."/>}
 
@@ -1616,6 +1626,8 @@ function ItemAnalysis({ attempts }) {
                 <div className="mt-3 flex flex-wrap gap-4 text-xs">
                   <span className="text-slate-500">Correct: <span className={`${num} font-bold text-slate-800`}>{Math.round(r.p*100)}%</span> <span className="text-slate-400">({r.right}/{r.seen})</span></span>
                   <span className="text-slate-500">Discrimination: <span className={`${num} font-bold ${r.d<0?"text-rose-600":r.d<0.15?"text-amber-600":"text-emerald-600"}`}>{r.d>=0?"+":""}{r.d.toFixed(2)}</span></span>
+                  {r.rpb !== null && <span className="text-slate-500" title="Correlation between this question and the rest of the paper">r: <span className={`${num} font-bold text-slate-800`}>{r.rpb.toFixed(2)}</span></span>}
+                  {r.level && <span className="text-slate-500">Labelled: <span className="font-bold text-slate-800">{["", "Easy", "Medium", "Hard"][r.level]}</span></span>}
                   {r.skipped>0 && <span className="text-slate-500">Skipped: <span className={`${num} font-bold text-slate-800`}>{r.skipped}</span></span>}
                 </div>
 
@@ -1641,6 +1653,7 @@ function ItemAnalysis({ attempts }) {
                 {r.verdict !== "good" && (
                   <p className={`mt-3 text-[11px] ${r.verdict==="inverted"?"font-semibold text-rose-700":"text-slate-500"}`}>{r.note}</p>
                 )}
+                {r.labelCheck && <p className="mt-1 text-[11px] font-semibold text-amber-700">{r.labelCheck.text}</p>}
               </div>
             ))}
           </div>
@@ -1813,7 +1826,8 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
       { label: "Attempt #",       key: "attempt_number" },
       { label: "Score",           value: r => `${r.score}/${r.max_score}` },
       { label: "Percent %",       key: "percent" },
-      { label: isBaseline ? "QAAPF band" : "Grade", value: r => isBaseline ? (getQLevel(r.percent)?.level || "") : r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
+      ...(isBaseline ? [{ label: "Difficulty-adjusted %", value: r => computeQAAPFProfile([r], questions).overallAdjPct ?? "" }] : []),
+      { label: isBaseline ? "QAAPF band" : "Grade", value: r => isBaseline ? (computeQAAPFProfile([r], questions).overallLevel?.level || "") : r.percent>=80?"Honors":r.percent>=60?"Pass":"Fail" },
       { label: "Flags",           key: "violations" },
       { label: "Time Taken",      value: r => fmtTime(r.time_used_sec || 0) },
       { label: "Time Taken (s)",  key: "time_used_sec" },
@@ -1984,7 +1998,7 @@ function QuizDetail({ quizzes, quiz, questions = [], attempts, classrooms, profi
         </div>
       </div>
 
-      <ItemAnalysis attempts={at}/>
+      <ItemAnalysis attempts={at} questions={questions}/>
     </div>
   );
 }
@@ -2158,8 +2172,12 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
   // Scope every stat to THIS student. Matching on name collides when two
   // students share a name; user_id is the only safe key.
   const myAll = useMemo(() => attempts.filter(a => a.user_id === userId), [attempts, userId]);
-  const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
-  const myRank = board.findIndex(s => s.user_id === userId);
+  /* A student's browser holds only their own attempts, so a "class
+     rank" here was always #1 of 1. Show their average on graded quizzes
+     instead, and a rank only when others' results are present. */
+  const board  = useMemo(() => buildLeaderboard(gradedOnly(attempts, quizzes)), [attempts, quizzes]);
+  const ranked = board.length > 1;
+  const myRank = ranked ? board.findIndex(s => s.user_id === userId) : -1;
   const myAvg  = board.find(s => s.user_id === userId)?.avg || 0;
   const mine   = myAll;
   const trend  = mine.slice().sort((a,b)=>new Date(a.submitted_at)-new Date(b.submitted_at)).map(a=>({ name: dateStr(a.submitted_at), pct: a.percent }));
@@ -2210,8 +2228,11 @@ function StudentHome({ quizzes, setQuizzes, questions, attempts, classrooms, set
               {honors ? <><Sparkles size={13} className="text-amber-300"/> Honors standing</> : <>Your standing</>}
             </div>
             <div className="mt-2 flex items-end gap-3">
-              <span className={`text-6xl font-extrabold leading-none ${num} ${myRank>=0?"text-amber-300":"text-white"}`}>{myRank>=0?`#${myRank+1}`:"—"}</span>
-              <span className="pb-2 text-sm text-violet-300">{mine.length?`of ${board.length} students`:"take a quiz to rank"}</span>
+              {ranked
+                ? <><span className={`text-6xl font-extrabold leading-none ${num} ${myRank>=0?"text-amber-300":"text-white"}`}>{myRank>=0?`#${myRank+1}`:"—"}</span>
+                    <span className="pb-2 text-sm text-violet-300">of {board.length} students</span></>
+                : <><span className={`text-6xl font-extrabold leading-none ${num} text-white`}>{board.length ? `${myAvg}%` : "—"}</span>
+                    <span className="pb-2 text-sm text-violet-300">{board.length ? "average on graded quizzes" : mine.length ? "only a baseline so far" : "take a quiz to begin"}</span></>}
             </div>
             <p className="mt-1.5 text-sm text-violet-200">{name}{mine.length?` · ${myAvg}% avg · ${mine.length} quiz${mine.length===1?"":"zes"}`:" — no quizzes taken yet"}</p>
           </div>
@@ -2685,6 +2706,7 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
   }, [locked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const choose = origIdx => setAnswers(a => { const n=[...a]; n[idx]=origIdx; return n; });
+  const clearAnswer = () => setAnswers(a => { const n=[...a]; n[idx]=null; return n; });
 
   /* The paper as answered. When the questions came from quiz_paper
      (STEP6) there is no answer key in the browser, so the score here
@@ -2835,6 +2857,31 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
     });
   }, [log.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const cur = drawn[idx];
+
+  /* Keyboard answering, as in NTA/GRE-style interfaces and for students
+     who cannot use a mouse: A–D (or 1–4) picks an option, ← / → move
+     between questions, Backspace or Delete clears the answer. Ignored
+     while the paper is locked, the submit check is open, or a key is
+     held with Ctrl/Alt/⌘. */
+  useEffect(() => {
+    const onKey = e => {
+      if (submitted || locked || showConfirm || !cur) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = (e.target && e.target.tagName) || "";
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
+      const k = e.key.toLowerCase();
+      const n = cur.order.length;
+      let pos = -1;
+      if (k.length === 1 && k >= "a" && k <= "h") pos = k.charCodeAt(0) - 97;
+      else if (k.length === 1 && k >= "1" && k <= "8") pos = Number(k) - 1;
+      if (pos >= 0 && pos < n) { e.preventDefault(); choose(cur.order[pos]); return; }
+      if (e.key === "ArrowRight" && idx < drawn.length - 1) { e.preventDefault(); setIdx(i => i + 1); }
+      else if (e.key === "ArrowLeft" && idx > 0) { e.preventDefault(); setIdx(i => i - 1); }
+      else if ((e.key === "Backspace" || e.key === "Delete") && answers[idx] !== null) { e.preventDefault(); clearAnswer(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }); // re-bound each render so it always sees the current question
   const low = remaining <= 30;
 
   // Submission failure screen — the localStorage draft persists until
@@ -2957,12 +3004,13 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
                   </button>
                 </div>
               </div>
-              <p className="mt-4 text-lg font-semibold leading-snug text-white">{cur.q.question}</p>
-              <div className="mt-5 space-y-2.5">
+              <p id="exam-stem" className="mt-4 text-lg font-semibold leading-snug text-white">{cur.q.question}</p>
+              <div className="mt-5 space-y-2.5" role="radiogroup" aria-labelledby="exam-stem">
                 {cur.order.map((origIdx, pos) => {
                   const sel = answers[idx] === origIdx;
                   return (
-                    <button key={origIdx} onClick={() => choose(origIdx)}
+                    <button key={origIdx} onClick={() => choose(origIdx)} role="radio" aria-checked={sel}
+                      aria-keyshortcuts={`${"ABCDEFGH"[pos]} ${pos + 1}`}
                       className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3.5 text-left text-sm font-medium transition-all ${sel?"border-violet-400 bg-violet-500/20 text-white":"border-slate-700 bg-slate-900/40 text-slate-200 hover:border-slate-500"}`}>
                       <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-bold transition ${sel?"bg-violet-500 text-white":"bg-slate-700 text-slate-300"}`}>{"ABCDEFGH"[pos]}</span>
                       {cur.q.options[origIdx]}
@@ -2970,6 +3018,11 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
                   );
                 })}
               </div>
+            </div>
+
+            <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[11px] text-slate-500">
+              <span className="hidden sm:inline">Keys: A–D or 1–4 to answer · ← → to move · Backspace to clear</span>
+              {answers[idx] !== null && <button onClick={clearAnswer} className="font-semibold text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline">Clear answer</button>}
             </div>
 
             <div className="mt-4 flex items-center justify-between">
@@ -3050,6 +3103,8 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
                   const isFlagged = flagged.has(i);
                   return (
                     <button key={i} onClick={() => setIdx(i)}
+                      aria-label={`Question ${i + 1}, ${answers[i] !== null ? "answered" : "not answered"}${isFlagged ? ", marked for review" : ""}`}
+                      aria-current={i === idx ? "step" : undefined}
                       className={`relative grid h-9 place-items-center rounded-xl text-xs font-bold transition ${num} ${i===idx?"bg-violet-500 text-white shadow-lg shadow-violet-900/50":answers[i]!==null?"bg-emerald-500/30 text-emerald-300":"bg-slate-700 text-slate-400 hover:bg-slate-600"}`}>
                       {i+1}
                       {isFlagged && <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-slate-800"/>}
@@ -3080,7 +3135,13 @@ function Exam({ questions, anchor = null, quiz, user, profile, attempts, onSubmi
 }
 
 /* ── Result ───────────────────────────────────────────────────────── */
-function Result({ quizzes, attempt, attempts, userId, onHome }) {
+function Result({ quizzes, attempt: given, attempts, userId, onHome }) {
+  /* After STEP7 the stored attempt carries no answer keys. They are
+     fetched once the quiz's answers are released (the server decides),
+     with the worked explanations. */
+  const [attempt, setAttempt] = useState(given);
+  const [explained, setExplained] = useState(null);
+  useEffect(() => { setAttempt(given); }, [given]);
   /* Answer-key exposure control.
 
      Showing the key the instant a paper is submitted creates an
@@ -3094,7 +3155,16 @@ function Result({ quizzes, attempt, attempts, userId, onHome }) {
     ? (srcQuiz.is_open === false) ||
       (srcQuiz.close_at ? new Date(srcQuiz.close_at).getTime() < Date.now() : false)
     : false;
-  const showAnswers = policy === "immediate" || (policy === "after_close" && windowShut);
+  const releasedHere = policy === "immediate" || (policy === "after_close" && windowShut);
+  const hasKeys = !!attempt.keysReleased || (attempt.items || []).some(it => it.correct !== undefined && it.correct !== null);
+  const showAnswers = releasedHere && hasKeys;
+  useEffect(() => {
+    if (!releasedHere || !attempt.id) return;
+    let live = true;
+    if (!hasKeys) attachKeys(attempt).then(a => { if (live && a !== attempt) setAttempt(a); }).catch(() => {});
+    fetchAttemptExplanations(attempt.id).then(x => { if (live) setExplained(x); }).catch(() => {});
+    return () => { live = false; };
+  }, [releasedHere, attempt.id, hasKeys]); // eslint-disable-line react-hooks/exhaustive-deps
   const board  = useMemo(() => buildLeaderboard(attempts), [attempts]);
   // By account, not display name — two students can share a name.
   const rank   = board.findIndex(s => s.user_id === (userId ?? attempt.user_id));
@@ -3125,7 +3195,7 @@ function Result({ quizzes, attempt, attempts, userId, onHome }) {
           <p className="mt-0.5 text-xs text-white/60">Attempt {attempt.attempt_number} · Completed in {fmtTime(attempt.time_used_sec)}</p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2 border-b border-slate-100 py-4">
-          {rank >= 0 && !isBaseline && <Badge tone="violet">Class rank #{rank+1} of {board.length}</Badge>}
+          {rank >= 0 && !isBaseline && board.length > 1 && <Badge tone="violet">Class rank #{rank+1} of {board.length}</Badge>}
           <Badge tone={vTone(attempt.violations)}>{attempt.violations} integrity flag{attempt.violations===1?"":"s"}</Badge>
         </div>
         <div className="px-6 py-4">
@@ -3133,7 +3203,11 @@ function Result({ quizzes, attempt, attempts, userId, onHome }) {
         </div>
       </div>
 
-      {attempt.items?.length > 0 && !showAnswers && (
+      {attempt.items?.length > 0 && releasedHere && !hasKeys && (
+        <div className={`${card} p-5 text-center text-xs text-slate-500`} role="status">Loading the answer review…</div>
+      )}
+
+      {attempt.items?.length > 0 && !releasedHere && (
         <div className={`${card} p-5 text-center`}>
           <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-slate-100"><ShieldCheck size={19} className="text-slate-500"/></div>
           <h4 className="text-sm font-bold text-slate-900">Answer review is not open yet</h4>
@@ -3178,8 +3252,8 @@ function Result({ quizzes, attempt, attempts, userId, onHome }) {
                     })}
                     {it.chosen===null && <div className="text-xs italic text-slate-400">Not answered.</div>}
                   </div>
-                  {explanationFor(it.question) && (
-                    <p className="mt-2.5 ml-7 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600"><span className="font-semibold text-slate-700">Why: </span>{explanationFor(it.question)}</p>
+                  {(explained?.[i] || explanationFor(it.question)) && (
+                    <p className="mt-2.5 ml-7 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600"><span className="font-semibold text-slate-700">Why: </span>{explained?.[i] || explanationFor(it.question)}</p>
                   )}
                 </div>
               );

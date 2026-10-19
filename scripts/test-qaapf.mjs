@@ -1,6 +1,7 @@
 /* Tests for the QAAPF scoring core.  Run: npm test
    No framework — plain assertions, so it runs anywhere Node 18+ does. */
 import assert from "node:assert/strict";
+import "./install-bank.mjs";
 import {
   QAAPF_QUESTIONS, QAAPF_LEGACY, DOMAINS, CLUSTERS,
   resolveItem, rekeyAttempt, computeQAAPFProfile, getQLevel,
@@ -278,6 +279,23 @@ test("retired items never go on a new paper, but answers to them still score", (
   for (const q of old) {
     const r = resolveItem({ question: q.q, options: q.o, correct: q.c }, null);
     assert.equal(r.key, q.c, q.id); assert.equal(r.meta.id, q.id);
+  }
+});
+
+test("a paper never carries two questions from one cue group", () => {
+  const tagged = QAAPF_QUESTIONS.filter(q => q.g && !q.r);
+  assert.ok(tagged.length >= 20);
+  for (let seed = 1; seed <= 300; seed++) for (const per of PAPER_SIZES) {
+    const g = buildBlueprint(per, makeRng(seed)).map(q => q.g).filter(Boolean);
+    assert.equal(new Set(g).size, g.length, `seed ${seed}: ${g.join(",")}`);
+  }
+});
+
+test("answers given to replaced wordings still score against their own key", () => {
+  for (const L of QAAPF_LEGACY.filter(l => l.status === "ok" && /v4\.6/.test(l.why))) {
+    const k = L.o.indexOf(L.a);
+    const r = resolveItem({ question: L.q, options: L.o, correct: null, chosen: k }, null);
+    assert.equal(r.key, k, L.q.slice(0, 40)); assert.equal(r.meta.id, L.next);
   }
 });
 

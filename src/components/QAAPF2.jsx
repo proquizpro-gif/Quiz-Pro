@@ -155,6 +155,7 @@ export default function QAAPF2({ attempts, questions }) {
       { label: "CU ID",  value: (s) => s.cu_id },
       { label: "Course", value: (s) => s.course },
       { label: "Baseline %",    value: (s) => s.profile.overallPct ?? "" },
+      { label: "Difficulty-adjusted %", value: (s) => s.profile.overallAdjPct ?? "" },
       { label: "Likely range",  value: (s) => (s.profile.overallRange ? `${s.profile.overallRange[0]}–${s.profile.overallRange[1]}` : "") },
       { label: "Correct",       value: (s) => s.profile.totalCorrect },
       { label: "Scored items",  value: (s) => s.profile.totalSeen },
@@ -322,6 +323,7 @@ function StudentProfile2({ student: s, scopeScores, scopes, scope, setScope, inS
             </div>
             <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
               {p.totalCorrect} of {p.totalSeen} framework questions correct, scored against the verified v{QAAPF_BANK_VERSION} key.
+              {p.overallAdjPct !== null && <> The band comes from the difficulty-adjusted score, <strong className={num}>{p.overallAdjPct}%</strong> (accuracy at each level re-weighted to a standard 20/40/40 easy–medium–hard mix).</>}
               {p.overallRange && <> Likely range <strong className={num}>{p.overallRange[0]}–{p.overallRange[1]}%</strong>.</>}{" "}
               {p.overallLevel?.desc}
             </p>

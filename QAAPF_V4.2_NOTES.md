@@ -159,3 +159,47 @@ Each of the 786 questions was re-rated against one written rubric (see the `lv` 
 3. Create a new baseline paper.
 
 The review workbook is `QAAPF-bank-audit-v4.5.xlsx`.
+
+---
+
+# v4.6: critical audit of questions and application (bank 4.5)
+
+The full report is in the doc "QuizPro Critical Audit — v4.6".
+
+## Deploy, in this order (when no quiz is running)
+
+1. Upload this package to GitHub as before. The repository **must be private**: it now contains `bank-secret.txt` and `STEP7_exam_confidentiality.sql`, which unlock the question bank.
+2. In Supabase → SQL Editor, run **STEP6** (if you haven't already), then **STEP7_exam_confidentiality.sql**. Both are safe to run more than once. The last query should list 6 rows.
+3. Reload the app as faculty. The red "Built-in QAAPF questions are locked" notice should be gone.
+4. Go to QAAPF → Question bank and click **Repair**. This copies explanations into your question rows, so students can see them after release, and updates 11 reworded questions.
+5. Sign in as a student and open a quiz to confirm it loads.
+
+## What changed
+
+- **The answer bank no longer ships in the website.** The site now publishes it encrypted. Staff unlock it with a passphrase that only STEP7's database function gives out. The build now fails if any question text, explanation or the passphrase appears in the published files.
+- **Students can't read their own answer key before release.** Keys move to a new table, `attempt_keys`. A student can read it only once the quiz's answers are released.
+- **Students can't promote themselves.** A database trigger stops anyone except an admin from changing a role.
+- **Explanations reach students only after release.** They are served from the database.
+- **Exam screen:**
+  - keyboard answering (A–D or 1–4, ← → to move, Backspace to clear);
+  - a Clear answer button;
+  - screen-reader roles;
+  - checked at phone width.
+- **Rankings:**
+  - Students no longer see a meaningless "#1 of 1" rank; they see their average instead.
+  - Baseline papers are left out of averages and rankings.
+- **Questions:**
+  - explanations on every question in use;
+  - distractor spread fixed;
+  - filler options replaced;
+  - cue groups added;
+  - "NOT" capitalised in questions that ask for the exception.
+
+## Tests
+
+- 37 core tests
+- 7 sealed-bank tests
+- 14 app tests
+- 47 database checks on two schema variants (PostgreSQL 16)
+- 51 browser checks
+- a published-files leak check on every build

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { card, cardH, btnP, btnG, inp, num, Badge, Empty, Toast } from "./ui.jsx";
 import { downloadCSV } from "../lib/csv.js";
+import { bankCalibration, MIN_N_CALIBRATE } from "../lib/psychometrics.js";
 import { insertQuestions, insertQuiz, updateQuestionSafe } from "../lib/db.js";
 import { useAuth } from "../lib/AuthContext.jsx";
 import QAAPFEvidence from "./QAAPFEvidence.jsx";
@@ -24,7 +25,7 @@ import {
   computeQAAPFProfile, selectProfileAttempts, isBaselineQuiz, BASELINE_TITLE_PREFIX,
   PAPER_SIZES, DEFAULT_PER_DOMAIN, difficultyMix, buildBlueprint, MIXES, DEFAULT_MIX, clusterMix, paperMix, exposedItemIds, formCode, suggestedMinutes, minutesForItems,
   paceOf, TIME_PRESETS, RACE_SECONDS_PER_QUESTION,
-  bankRowFor, isRowVerified, planBankRepairs, verifiedItemFor, norm,
+  bankRowFor, isRowVerified, planBankRepairs, verifiedItemFor, norm, bankInstalled, rekeyAttempts,
 } from "../lib/qaapf-core.js";
 
 /* Kept so existing imports (App.jsx and older components) still work. */
@@ -97,11 +98,16 @@ export default function QAAPFPanel({ attempts, classrooms, questions, quizzes, s
         )}
       </div>
 
-      {tab === "baseline"  && <BaselineGenerator questions={questions} setQuestions={setQuestions} quizzes={quizzes} setQuizzes={setQuizzes} classrooms={classrooms} attempts={attempts} onDone={toast2} goResults={() => setTab("dashboard")} />}
+      {(tab === "baseline" || tab === "bank") && !bankInstalled() && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800" role="alert">
+          The built-in question bank is locked, so papers cannot be generated and the bank cannot be shown. See the notice at the top of the page.
+        </div>
+      )}
+      {tab === "baseline"  && bankInstalled() && <BaselineGenerator questions={questions} setQuestions={setQuestions} quizzes={quizzes} setQuizzes={setQuizzes} classrooms={classrooms} attempts={attempts} onDone={toast2} goResults={() => setTab("dashboard")} />}
       {tab === "dashboard" && <Dashboard attempts={sel.attempts} questions={questions} />}
       {tab === "profile2"  && <QAAPF2 attempts={sel.attempts} questions={questions} />}
       {tab === "cohort"    && <CohortHeatmap attempts={sel.attempts} questions={questions} />}
-      {tab === "bank"      && <QuestionInventory questions={questions} setQuestions={setQuestions} toast2={toast2} />}
+      {tab === "bank"      && bankInstalled() && <><BankCalibration attempts={sel.attempts} questions={questions} /><QuestionInventory questions={questions} setQuestions={setQuestions} toast2={toast2} /></>}
       {tab === "accredit"  && <QAAPFEvidence attempts={attempts} questions={questions} quizzes={quizzes} classrooms={classrooms} />}
       {tab === "levels"    && <LevelsGuide />}
     </div>
@@ -457,6 +463,7 @@ function Dashboard({ attempts, questions }) {
     { label: "Level", value: s => s.profile.overallLevel?.level || "N/A" },
     { label: "Label", value: s => s.profile.overallLevel?.label || "N/A" },
     { label: "Overall %", value: s => s.profile.overallPct ?? "" },
+    { label: "Difficulty-adjusted % (band basis)", value: s => s.profile.overallAdjPct ?? "" },
     { label: "Likely range", value: s => rangeText(s.profile.overallRange) },
     { label: "Correct", value: s => s.profile.totalCorrect },
     { label: "Scored items", value: s => s.profile.totalSeen },
@@ -588,7 +595,7 @@ function Dashboard({ attempts, questions }) {
                       <td className="px-4 py-2.5 font-medium text-slate-800">{s.name}</td>
                       <td className="hidden px-3 py-2.5 text-slate-500 sm:table-cell">{s.course}</td>
                       <td className="px-3 py-2.5 text-center">{lvl ? <span className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-bold ${lvl.light}`}>{lvl.level}</span> : "—"}</td>
-                      <td className={`px-3 py-2.5 text-center font-bold ${num}`} title={s.profile.overallRange ? `Likely range ${rangeText(s.profile.overallRange)}` : ""}>{s.profile.overallPct !== null ? `${s.profile.overallPct}%` : "—"}</td>
+                      <td className={`px-3 py-2.5 text-center font-bold ${num}`} title={`${s.profile.overallRange ? `Likely range ${rangeText(s.profile.overallRange)}. ` : ""}Band from the difficulty-adjusted score: ${s.profile.overallAdjPct ?? "—"}%`}>{s.profile.overallPct !== null ? `${s.profile.overallPct}%` : "—"}{s.profile.overallAdjPct !== null && s.profile.overallAdjPct !== s.profile.overallPct && <span className="ml-1 text-[10px] font-semibold text-slate-400">({s.profile.overallAdjPct} adj.)</span>}</td>
                       {CLUSTERS.map(c => {
                         const cp = s.profile.clusterProfiles.find(p => p.id === c.id);
                         return <td key={c.id} className="hidden px-2 py-2.5 text-center lg:table-cell"><span className={`font-bold ${num} ${pctTone(cp?.pct)}`}>{cp?.pct ?? "—"}</span></td>;
@@ -649,7 +656,7 @@ function printStudentReport(s) {
     <header>
       <div>
         <h1>${esc(s.name)}</h1>
-        <div class="sub">${esc(s.course || "")} ${s.cu_id ? "· " + esc(s.cu_id) : ""} · ${p.totalCorrect} of ${p.totalSeen} correct · score ${p.overallPct ?? "—"}% (likely ${rangeText(p.overallRange)})</div>
+        <div class="sub">${esc(s.course || "")} ${s.cu_id ? "· " + esc(s.cu_id) : ""} · ${p.totalCorrect} of ${p.totalSeen} correct · score ${p.overallPct ?? "—"}% (likely ${rangeText(p.overallRange)}) · difficulty-adjusted ${p.overallAdjPct ?? "—"}%, which sets the band</div>
       </div>
       ${lvl ? `<div class="band"><div class="lv">${lvl.level}</div><div class="lb">${esc(lvl.label)}</div></div>` : ""}
     </header>
@@ -684,6 +691,9 @@ function StudentProfileCard({ student: s }) {
       <div className="mb-4 flex flex-wrap items-center gap-2 text-[11px]">
         <span className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-1 text-slate-500">
           {p.totalCorrect}/{p.totalSeen} correct · {p.overallPct}% · likely {rangeText(p.overallRange)}
+        </span>
+        <span className="rounded-lg border border-violet-100 bg-violet-50 px-2 py-1 text-violet-700" title="The band is read from this score: accuracy at each difficulty level, re-weighted to a standard mix (20% easy, 40% medium, 40% hard), so a harder paper does not push students into lower bands.">
+          Difficulty-adjusted {p.overallAdjPct ?? "—"}% → {lvl?.level || "—"}
         </span>
         <Badge tone={p.confidence.band === "High" ? "emerald" : p.confidence.band === "Moderate" ? "amber" : "rose"}>{p.confidence.band} confidence</Badge>
         {p.voided.length > 0 && <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-slate-400">{p.voided.length} faulty item{p.voided.length === 1 ? "" : "s"} withdrawn</span>}
@@ -892,6 +902,80 @@ function LevelsGuide() {
 /* ══════════════════════════════════════════════════════════════════
    QUESTION BANK
    ══════════════════════════════════════════════════════════════════ */
+/* How each built-in question behaves with real students, pooled over
+   every baseline paper it appeared on. This is the check that should
+   decide difficulty labels: a trainer's judgement is the starting
+   point, the data are the correction. */
+function BankCalibration({ attempts, questions }) {
+  const [open, setOpen] = useState(false);
+  const rows = useMemo(() => bankCalibration(
+    rekeyAttempts(attempts, questions),
+    it => verifiedItemFor(it.question)?.id || null,
+    it => verifiedItemFor(it.question)?.lv || null,
+  ), [attempts, questions]);
+  const enough = rows.filter(r => r.enough);
+  const flagged = enough.filter(r => r.flag);
+  const count = f => flagged.filter(r => r.flag === f).length;
+  const name = l => ["", "Easy", "Medium", "Hard"][l] || "—";
+  const flagText = r => r.flag === "inverted" ? "Strong students miss it more than weak ones — check key and wording"
+    : r.flag === "weak" ? "Barely separates strong from weak students" : r.labelCheck?.text || "";
+  const exportRows = () => downloadCSV("qaapf-bank-calibration.csv", rows, [
+    { label: "Bank ID", key: "id" }, { label: "Question", key: "question" },
+    { label: "Labelled level", value: r => name(r.level) }, { label: "Level from data", value: r => r.enough ? name(r.empirical) : "" },
+    { label: "Answers", key: "n" }, { label: "Correct %", value: r => Math.round(r.p * 100) },
+    { label: "Discrimination (D)", value: r => r.d === null ? "" : r.d.toFixed(2) },
+    { label: "Point-biserial (r)", value: r => r.rpb === null ? "" : r.rpb.toFixed(2) },
+    { label: "Flag", value: r => flagText(r) },
+  ]);
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <button onClick={() => setOpen(v => !v)} className="flex w-full items-center justify-between gap-3 p-5 text-left transition hover:bg-slate-50">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900"><BarChart2 size={15} className="text-violet-600" /> Calibration from student answers
+            {flagged.length > 0 && <Badge tone="amber">{flagged.length} to review</Badge>}</h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {enough.length
+              ? `${enough.length} built-in questions have at least ${MIN_N_CALIBRATE} answers on baseline papers: ${count("easier")} easier than labelled, ${count("harder")} harder, ${count("inverted")} possibly mis-keyed, ${count("weak")} weak.`
+              : `No built-in question has ${MIN_N_CALIBRATE} answers on baseline papers yet (${rows.length} have some). Labels are checked against real results once they do.`}
+          </p>
+        </div>
+        <span className="shrink-0 text-xs font-semibold text-violet-600">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-slate-100 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="max-w-2xl text-[11px] leading-relaxed text-slate-500">Level from data: 75% or more correct behaves as easy, 45–74% as medium, under 45% as hard. Send the IDs of questions you want re-labelled or withdrawn to whoever maintains the bank; a question flagged "check key" should be withdrawn from papers until it is checked.</p>
+            <button onClick={exportRows} disabled={!rows.length} className={`${btnG} !px-3 !py-1.5 !text-xs`}><FileDown size={12} /> Export all</button>
+          </div>
+          {!flagged.length ? <Empty icon={CheckCircle2} title="Nothing to review" hint={enough.length ? "Every question with enough answers behaves as its label says." : "Come back after more students have sat baseline papers."} /> : (
+            <div className="overflow-x-auto rounded-xl border border-slate-100">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-400">
+                  <tr><th className="px-3 py-2 text-left">ID</th><th className="px-3 py-2 text-left">Question</th><th className="px-3 py-2">Label</th><th className="px-3 py-2">Data</th><th className="px-3 py-2">Answers</th><th className="px-3 py-2">Correct</th><th className="px-3 py-2">D</th><th className="px-3 py-2 text-left">Why flagged</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {flagged.map(r => (
+                    <tr key={r.id} className={r.flag === "inverted" ? "bg-rose-50/50" : ""}>
+                      <td className="px-3 py-2 font-mono text-slate-500">{r.id}</td>
+                      <td className="max-w-xs truncate px-3 py-2 text-slate-700" title={r.question}>{r.question}</td>
+                      <td className="px-3 py-2 text-center">{name(r.level)}</td>
+                      <td className="px-3 py-2 text-center font-semibold">{name(r.empirical)}</td>
+                      <td className={`px-3 py-2 text-center ${num}`}>{r.n}</td>
+                      <td className={`px-3 py-2 text-center ${num}`}>{Math.round(r.p * 100)}%</td>
+                      <td className={`px-3 py-2 text-center ${num} ${r.d !== null && r.d < 0 ? "font-bold text-rose-600" : ""}`}>{r.d === null ? "—" : r.d.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-slate-600">{flagText(r)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QuestionInventory({ questions, setQuestions, toast2 }) {
   const [filter, setFilter] = useState("all");
   const [working, setWorking] = useState(false);

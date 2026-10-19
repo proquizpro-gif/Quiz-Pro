@@ -1,15 +1,17 @@
 {
   "name": "quizpro",
   "private": true,
-  "version": "4.5.0",
+  "version": "4.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node scripts/verify-bank.mjs && node scripts/test-qaapf.mjs && node scripts/test-app.mjs",
+    "prebuild": "node scripts/build-bank.mjs && node scripts/verify-bank.mjs && node scripts/test-qaapf.mjs && node scripts/test-sealed.mjs && node scripts/test-app.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/test-qaapf.mjs && node scripts/test-app.mjs",
-    "verify:bank": "node scripts/verify-bank.mjs"
+    "test": "node scripts/build-bank.mjs && node scripts/test-qaapf.mjs && node scripts/test-sealed.mjs && node scripts/test-app.mjs",
+    "verify:bank": "node scripts/verify-bank.mjs",
+    "predev": "node scripts/build-bank.mjs",
+    "postbuild": "node scripts/check-dist.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",

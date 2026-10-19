@@ -22,12 +22,28 @@
       diagnostic axes, not weights folded into the headline.
    ══════════════════════════════════════════════════════════════════ */
 
-import { QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE } from "./qaapf-bank.js";
+import { PUBLIC_META, PUBLIC_VERSION, PUBLIC_DATE } from "./generated/qaapf-public.js";
+import { stemHash } from "./seal.js";
 
-export { QAAPF_QUESTIONS, QAAPF_LEGACY, QAAPF_BANK_VERSION, QAAPF_BANK_DATE };
+/* ── The built-in bank is not part of the published JavaScript ───────
+   It arrives sealed (see seal.js and scripts/build-bank.mjs) and is
+   installed with installBank() — in the browser only for staff, after
+   the database hands them the passphrase; in Node scripts and tests
+   straight from qaapf-bank.js. Until then these arrays are empty and
+   every lookup falls back to PUBLIC_META (domain, unit and level by a
+   hash of the question text, no answers) and the stored key that the
+   server marked the attempt with.
+
+   The arrays are exported once and filled in place, so modules that
+   imported them see the bank as soon as it is installed. */
+export const QAAPF_QUESTIONS = [];
+export const QAAPF_LEGACY = [];
 /* Items that can go on a new paper or be imported. Retired items (r: 1)
    stay in QAAPF_QUESTIONS so attempts that used them still score. */
-export const QAAPF_ACTIVE = QAAPF_QUESTIONS.filter(q => !q.r);
+export const QAAPF_ACTIVE = [];
+export let QAAPF_BANK_VERSION = PUBLIC_VERSION;
+export let QAAPF_BANK_DATE = PUBLIC_DATE;
+export const bankInstalled = () => QAAPF_QUESTIONS.length > 0;
 
 /* ── Proficiency bands ───────────────────────────────────────────────
    Cut-points are unchanged from v3 so earlier classifications stay
@@ -154,19 +170,44 @@ export function selectProfileAttempts(attempts, quizzes, mode = "auto") {
    ══════════════════════════════════════════════════════════════════ */
 const BANK_BY_STEM = new Map();
 const BANK_BY_ID = new Map();
-for (const q of QAAPF_QUESTIONS) {
-  const entry = { ...q, sig: optionSig(q.o) };
-  BANK_BY_STEM.set(norm(q.q), entry);
-  BANK_BY_ID.set(q.id, entry);
-}
 const LEGACY_BY_STEM = new Map();
 const LEGACY_BY_STEM_SIG = new Map();
-for (const L of QAAPF_LEGACY) {
-  const entry = { ...L, sig: optionSig(L.o) };
-  const k = norm(L.q);
-  if (!LEGACY_BY_STEM.has(k)) LEGACY_BY_STEM.set(k, []);
-  LEGACY_BY_STEM.get(k).push(entry);
-  LEGACY_BY_STEM_SIG.set(`${k}##${entry.sig}`, entry);
+
+export function installBank({ questions, legacy = [], version, date }) {
+  if (!Array.isArray(questions) || !questions.length) throw new Error("installBank: no questions");
+  QAAPF_QUESTIONS.splice(0, QAAPF_QUESTIONS.length, ...questions);
+  QAAPF_LEGACY.splice(0, QAAPF_LEGACY.length, ...legacy);
+  QAAPF_ACTIVE.splice(0, QAAPF_ACTIVE.length, ...questions.filter(q => !q.r));
+  if (version) QAAPF_BANK_VERSION = version;
+  if (date) QAAPF_BANK_DATE = date;
+  BANK_BY_STEM.clear(); BANK_BY_ID.clear(); LEGACY_BY_STEM.clear(); LEGACY_BY_STEM_SIG.clear();
+  for (const q of questions) {
+    const entry = { ...q, sig: optionSig(q.o) };
+    BANK_BY_STEM.set(norm(q.q), entry);
+    BANK_BY_ID.set(q.id, entry);
+  }
+  for (const L of legacy) {
+    const entry = { ...L, sig: optionSig(L.o) };
+    const k = norm(L.q);
+    if (!LEGACY_BY_STEM.has(k)) LEGACY_BY_STEM.set(k, []);
+    LEGACY_BY_STEM.get(k).push(entry);
+    LEGACY_BY_STEM_SIG.set(`${k}##${entry.sig}`, entry);
+  }
+}
+
+/* Public metadata for a question text, or null. */
+const _pubCache = new Map();
+export function publicMetaFor(question) {
+  const k = norm(question);
+  if (_pubCache.has(k)) return _pubCache.get(k);
+  const raw = PUBLIC_META[stemHash(k)];
+  let m = null;
+  if (raw) {
+    const [id, d, u, t, lv, cat] = raw.split("|");
+    m = { id: id || null, domain: d, unit: u, topic: t, level: Number(lv), cat: cat === "1", cog: cognitiveOf(t), builtIn: true };
+  }
+  _pubCache.set(k, m);
+  return m;
 }
 
 export const bankItemByStem = stem => BANK_BY_STEM.get(norm(stem)) || null;
@@ -288,6 +329,17 @@ export function resolveItem(it, allQuestionsOrCtx) {
     return { meta, void: true, why: ref.status === "void" ? ref.why : "unrecognised earlier version", source: "legacy" };
   }
 
+  // 2b. Bank not installed here (a student's browser): a built-in item
+  //     is recognised by its public fingerprint and scored with the key
+  //     the server stored when it marked the attempt.
+  if (!BANK_BY_STEM.size) {
+    const pm = publicMetaFor(it?.question);
+    if (pm) {
+      const { cat, ...meta } = pm;
+      return { meta, key: stored, source: "stored" };
+    }
+  }
+
   // 3. A teacher's own question: score against the bank row's current
   //    key (so a key fixed after the attempt applies retroactively).
   const row = it?.qid !== null && it?.qid !== undefined ? ctx.rowsById.get(it.qid) : null;
@@ -313,6 +365,9 @@ export function rekeyAttempt(att, allQuestions) {
     const r = resolveItem(it, ctx);
     if (r.void) { changed = true; return { ...it, void: true, voidReason: r.why }; }
     const key = r.key;
+    /* No key here (a student's paper before its answers are released,
+       STEP7): nothing to check it against, so it is left out. */
+    if (key === null || key === undefined) return it;
     if (key !== toIndex(it.correct)) changed = true;
     scored++;
     if (it.chosen !== null && it.chosen !== undefined && Number(it.chosen) === key) correct++;
@@ -504,11 +559,34 @@ export function computeConfidence({
    ══════════════════════════════════════════════════════════════════ */
 const pctOf = (c, n) => (n ? Math.round((c / n) * 100) : null);
 
+/* ── Difficulty-adjusted score ──────────────────────────────────────
+   Bands describe what a student can do, so they must not depend on how
+   hard a particular paper was. The raw percentage does: the same
+   student scores far lower on a paper that is 60% hard than on one that
+   is 40% hard. The adjusted score re-weights the student's accuracy at
+   each difficulty level to a fixed reference mix (the "balanced" paper:
+   20% easy, 40% medium, 40% hard), and the band is read from it.
+   Accuracy at a level with few items is pulled towards the student's
+   overall accuracy (two items' worth), so one lucky or unlucky answer
+   does not swing it. Every presented item counts, reached or not: the
+   paper is timed. On a paper that already has the reference mix the
+   adjusted score equals the raw score. */
+export const REFERENCE_MIX = { 1: 0.2, 2: 0.4, 3: 0.4 };
+const SHRINK = 2;
+export function adjustedPct(byLevel) {
+  const n = [1, 2, 3].reduce((s, l) => s + (byLevel[l]?.n || 0), 0);
+  if (!n) return null;
+  const p = [1, 2, 3].reduce((s, l) => s + (byLevel[l]?.c || 0), 0) / n;
+  const acc = l => ((byLevel[l]?.c || 0) + SHRINK * p) / ((byLevel[l]?.n || 0) + SHRINK);
+  return Math.round(100 * [1, 2, 3].reduce((s, l) => s + REFERENCE_MIX[l] * acc(l), 0));
+}
+
 export function computeQAAPFProfile(attempts, allQuestions) {
   const ctx = keyContext(allQuestions);
 
   const dom = {};
-  for (const d of DOMAINS) dom[d.id] = { correct: 0, seen: 0, byLevel: { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } } };
+  for (const d of DOMAINS) dom[d.id] = { correct: 0, seen: 0, byLevel: { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } }, all: { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } } };
+  const allLevels = { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } };
   const levelAgg = { 1: { c: 0, n: 0 }, 2: { c: 0, n: 0 }, 3: { c: 0, n: 0 } };
   const cogAgg = {};
   for (const c of COGNITIVE) cogAgg[c.id] = { c: 0, n: 0 };
@@ -561,6 +639,8 @@ export function computeQAAPFProfile(attempts, allQuestions) {
 
       const didAnswer = it.chosen !== null && it.chosen !== undefined;
       const hasKey = Number.isInteger(r.key) && r.key >= 0;
+      /* Keys not released to this browser yet (STEP7): not evidence. */
+      if (!hasKey) { seenKeys.delete(key); continue; }
       const ok = didAnswer && hasKey && Number(it.chosen) === r.key;
       const sec = secOf(it);
       if (sec !== null || Number.isInteger(it.pos)) speedKnown = true;
@@ -573,6 +653,8 @@ export function computeQAAPFProfile(attempts, allQuestions) {
       const bucket = dom[meta.domain];
       bucket.seen++; if (ok) bucket.correct++;
       const bl = bucket.byLevel[meta.level]; if (bl && !unreached) { bl.n++; if (ok) bl.c++; }
+      const ba = bucket.all[meta.level]; if (ba) { ba.n++; if (ok) ba.c++; }
+      const oa = allLevels[meta.level]; if (oa) { oa.n++; if (ok) oa.c++; }
 
       presented++;
       if (unreached) { notReached++; if (levelNotReached[meta.level] !== undefined) levelNotReached[meta.level]++; }
@@ -602,10 +684,11 @@ export function computeQAAPFProfile(attempts, allQuestions) {
   const domainProfiles = DOMAINS.map(d => {
     const b = dom[d.id];
     const pct = pctOf(b.correct, b.seen);
+    const adjPct = adjustedPct(b.all);
     return {
       ...d,
-      correct: b.correct, total: b.seen, pct,
-      level: getQLevel(pct),
+      correct: b.correct, total: b.seen, pct, adjPct,
+      level: getQLevel(adjPct),
       reliable: b.seen >= RELIABLE_MIN,
       byLevel: b.byLevel,
       /* Where competence stops: the hardest tier still cleared at 60% on
@@ -619,19 +702,22 @@ export function computeQAAPFProfile(attempts, allQuestions) {
     const correct = parts.reduce((s, b) => s + b.correct, 0);
     const total = parts.reduce((s, b) => s + b.seen, 0);
     const pct = pctOf(correct, total);
-    return { ...c, correct, total, pct, level: getQLevel(pct), reliable: total >= CLUSTER_RELIABLE_MIN, range: total ? wilson(correct, total) : null };
+    const lv = {}; for (const l of [1, 2, 3]) lv[l] = { c: parts.reduce((s, b) => s + b.all[l].c, 0), n: parts.reduce((s, b) => s + b.all[l].n, 0) };
+    const adjPct = adjustedPct(lv);
+    return { ...c, correct, total, pct, adjPct, level: getQLevel(adjPct), reliable: total >= CLUSTER_RELIABLE_MIN, range: total ? wilson(correct, total) : null };
   });
 
   const seen = presented;
   const correct = Object.values(dom).reduce((s, b) => s + b.correct, 0);
   const overallPct = pctOf(correct, seen);
-  const overallLevel = getQLevel(overallPct);
+  const overallAdjPct = adjustedPct(allLevels);
+  const overallLevel = getQLevel(overallAdjPct);
   const overallRange = seen ? wilson(correct, seen) : null;
 
   const assessed = domainProfiles.filter(d => d.pct !== null);
   const firm = assessed.filter(d => d.reliable);
-  const strengths = firm.filter(d => d.pct >= 70).sort((a, b) => b.pct - a.pct).slice(0, 3);
-  const gaps = firm.filter(d => d.pct < 60).sort((a, b) => a.pct - b.pct).slice(0, 3);
+  const strengths = firm.filter(d => d.adjPct >= 70).sort((a, b) => b.adjPct - a.adjPct).slice(0, 3);
+  const gaps = firm.filter(d => d.adjPct < 60).sort((a, b) => a.adjPct - b.adjPct).slice(0, 3);
 
   /* Difficulty is profiled on the questions the student reached, so a
      slow but able student is not read as unable to do hard questions. */
@@ -691,7 +777,10 @@ export function computeQAAPFProfile(attempts, allQuestions) {
 
   return {
     domainProfiles, clusterProfiles,
-    overallPct, overallLevel, overallRange,
+    overallPct, overallAdjPct, overallLevel, overallRange,
+    /* The band is read from the difficulty-adjusted score, not the raw
+       percentage (see adjustedPct). */
+    bandBasis: "difficulty-adjusted",
     strengths, gaps,
     totalSeen: seen, totalCorrect: correct,
     coverage: assessed.length,
@@ -876,6 +965,7 @@ export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null, e
   const unitUse = new Map();
   const seen = q => (exposed && exposed.has(q.id) ? 1 : 0);
   const out = [];
+  const groups = new Set();     // cue groups already on the paper (item field g)
   for (const lv of ["cat", 3, 2, 1]) {
     if (!mix[lv]) continue;
     const fits = lv === "cat" ? (q => q.k === "cat") : lv === 3 ? (q => q.lv === 3 && q.k !== "cat") : (q => q.lv === lv);
@@ -886,7 +976,10 @@ export function pickDomainItems(domId, n, rng = Math.random, mixCounts = null, e
          spread; then the shuffle order. */
       const use = q => unitUse.get(q.u) || 0;
       candidates = candidates.slice().sort((a, b) => ((use(a) >= 2) - (use(b) >= 2)) || (seen(a) - seen(b)) || (use(a) - use(b)));
-      const pick = candidates.shift();
+      /* Never two items from one cue group, while any other item fits. */
+      const free = candidates.findIndex(q => !q.g || !groups.has(q.g));
+      const pick = candidates.splice(free >= 0 ? free : 0, 1)[0];
+      if (pick.g) groups.add(pick.g);
       out.push(pick);
       unitUse.set(pick.u, (unitUse.get(pick.u) || 0) + 1);
     }
@@ -945,6 +1038,8 @@ export function exposedItemIds(quizzes, questions) {
 export function difficultyRankOf(question) {
   const b = BANK_BY_STEM.get(norm(question?.question));
   if (b) return b.k === "cat" ? 4 : b.lv;
+  const pm = publicMetaFor(question?.question);
+  if (pm) return pm.cat ? 4 : pm.level;
   return question?.difficulty === "easy" ? 1 : question?.difficulty === "hard" ? 3 : 2;
 }
 
@@ -965,6 +1060,9 @@ export function bankRowFor(item) {
     subject: "Aptitude", unit: item.u, topic: item.t, question: item.q,
     options: [...item.o], correct: item.c,
     difficulty: item.lv === 1 ? "easy" : item.lv === 2 ? "medium" : "hard", points: 1,
+    /* Stored with the question (STEP7 column) so the server can show a
+       student the working once their quiz's answers are released. */
+    explanation: item.x || null,
   };
 }
 
@@ -988,7 +1086,8 @@ export function planBankRepairs(rows) {
       if (row.difficulty !== want.difficulty) patch.difficulty = want.difficulty;
       if ((row.unit || "") !== want.unit) patch.unit = want.unit;
       if ((row.topic || "") !== want.topic) patch.topic = want.topic;
-      if (Object.keys(patch).length) repairs.push({ row, patch, item: b, reason: patch.options ? "answer key or options out of date" : "labels out of date" });
+      if ((row.explanation || null) !== want.explanation) patch.explanation = want.explanation;
+      if (Object.keys(patch).length) repairs.push({ row, patch, item: b, reason: patch.options ? "answer key or options out of date" : Object.keys(patch).every(k => k === "explanation") ? "explanation added" : "labels out of date" });
       continue;
     }
     const versions = LEGACY_BY_STEM.get(stem);
@@ -997,7 +1096,7 @@ export function planBankRepairs(rows) {
       const next = L.next ? BANK_BY_ID.get(L.next) : null;
       if (next) {
         const want = bankRowFor(next);
-        repairs.push({ row, patch: { question: want.question, options: want.options, correct: want.correct, difficulty: want.difficulty, unit: want.unit, topic: want.topic }, item: next, reason: L.status === "void" ? `faulty earlier version (${L.why})` : "earlier wording" });
+        repairs.push({ row, patch: { question: want.question, options: want.options, correct: want.correct, difficulty: want.difficulty, unit: want.unit, topic: want.topic, explanation: want.explanation }, item: next, reason: L.status === "void" ? `faulty earlier version (${L.why})` : "earlier wording" });
       } else if (L.status === "void") {
         retire.push({ row, reason: L.why });
       }
